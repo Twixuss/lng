@@ -1,0 +1,11 @@
+*.vs/
+bin/*
+data/bin/*
+data/temp/*
+*.ast
+*.tokens
+*.sln
+*.lnk
+*.bat
+
+!bin/imports

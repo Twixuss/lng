@@ -1,0 +1,112 @@
+// TODO: 
+// string.view
+// string.span
+build {
+    type "app"
+    out "program.exe"
+    bindir "<filedir>bin/"
+    tempdir "<filedir>temp/"
+    translate "cpp"
+}
+
+//import "console"
+
+test function {
+    console.write("
+hello
+line
+")
+    console.write('s')
+    val1 int
+    val2 auto = 10
+    val3 int = 10 + 10
+    val4 int = (10 + 10)
+    ptr1 *int
+    ptr2 *int = &val1
+    ptr3 **int = &ptr2
+    print function(val int) {
+        
+    }
+    print(5 * sizeof int)
+    print(2+3)
+    print(sizeof int)
+    print(val1)
+    print(*ptr2)
+    print(**ptr3)
+}
+// global variable
+g float
+
+// g = 15 // error
+
+main function {
+    s8  int8
+    s16 int16
+    s32 int32
+    s64 int64
+    u8  uint8
+    u16 uint16
+    u32 uint32
+    u64 uint64
+    f32 float32
+    f64 float64
+    b   bool
+    c   char
+    s   string
+    
+    //var string  = s8 + s8
+    
+    console.write("Hello world!\n")
+    console.write("1+2+3+4+5 = ")
+    console.write(-(1+2+3+4+5))
+    console.write('\n')
+    
+    factorial function(param uint): uint {
+        result uint = 1
+        while param > 1 {
+            result *= param
+            param -= 1
+        }
+        return result
+    }
+    printFactorial function(param uint) {
+        console.write("factorial(")
+        console.write(param)
+        console.write(") = ")
+        console.write(factorial(param))
+        console.write('\n')
+    }
+    printFactorial(1)
+    printFactorial(2)
+    printFactorial(3)
+    printFactorial(4)
+    printFactorial(5)
+    printFactorial(6)
+    printFactorial(7)
+    printFactorial(8)
+    printFactorial(9)
+    printFactorial(10)
+}
+g2 int
+v4f type #align(16) {
+    x float32
+    y float32
+    z float32
+    w float32
+    xy v2f #offset 0
+    yz v2f #offset 4
+    zw v2f #offset 8
+    xyz v3f #offset 0
+    yzw v3f #offset 4
+}
+v3f type {
+    x float32
+    y float32
+    z float32
+    xy v2f #offset 0
+    yz v2f #offset 4
+}
+v2f type {
+    x float32
+    y float32
+}

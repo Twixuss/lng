@@ -1,0 +1,98 @@
+import "common.lng"
+console namespace {
+    defaultDigitTable string = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    write function(val string): uint32 #internal
+    write function(begin ^char, end ^char): uint32 {
+        return write(makeString(begin, end))
+    }
+    write function(begin ^char, count uint32): uint32 {
+        return write(makeString(begin, count))
+    }
+    write function(val char): uint32 {
+        str string
+        str.begin = @val
+        str.end = 1 + str.begin
+        return write(str)
+    }
+    write function(val uint, radix uint32 = 10, zeroExtent bool = false, digitTable string = defaultDigitTable): uint32 {
+        if radix < 2 || radix > digitTable.count() return 0
+        buf [64]char
+        charIdx uint32 = 0
+        div uint32 = radix
+        while div as uint64 * radix as uint64 < 4294967295 div *= radix
+        if zeroExtent {
+            while div > 0 {
+                buf[charIdx] = digitTable.at((val / div) % radix)
+                charIdx += 1
+                div /= radix
+            }
+        } 
+        else {
+            put bool = false
+            while div > 0 {
+                result char = digitTable.at((val / div) % radix)
+                if !put && result != digitTable.at(0) put = true
+                if put {
+                    buf[charIdx] = result
+                    charIdx += 1
+                }
+                div /= radix
+            }
+        }
+        return write(@buf[0], charIdx)
+    }
+    write function(val int, radix uint32 = 10, zeroExtent bool = false, digitTable string = defaultDigitTable): uint32 {
+        if val < 0 
+            return write('-') + write((-val) as uint, radix, zeroExtent, digitTable)
+        else
+            return write(val as uint, radix, zeroExtent, digitTable)            
+    }
+    writeLine function(val string): uint32 {
+        return write(val) + write('\n')
+    }
+    writeLine function(val char): uint32 {
+        return write(val) + write('\n')
+    }
+    writeLine function(val uint, radix uint32 = 10, zeroExtent bool = false, digitTable string = defaultDigitTable): uint32 {  
+        return write(val, radix, zeroExtent, digitTable) + write('\n')
+    }
+    writeLine function(val int, radix uint32 = 10, zeroExtent bool = false, digitTable string = defaultDigitTable): uint32 {  
+        return write(val, radix, zeroExtent, digitTable) + write('\n')
+    }
+    read function(buf ^char, max uint): uint #internal
+    readLine function(str string): string {
+        result string = str
+        c char
+        while str.count() != 0 {
+            read(@c, 1)
+            if c == '\r' {
+                read(@c, 1)
+                assert(c == '\n')
+                break
+            }
+            ^str.begin = c
+            str.begin += 1
+        }
+        result.end = str.begin
+        return result
+    }
+    read function(str string): string {
+        result string = str
+        c char
+        while str.count() != 0 {
+            read(@c, 1)
+            if c == ' ' {
+                break
+            }
+            else if c == '\r' {
+                read(@c, 1)
+                assert(c == '\n')
+                break
+            }
+            ^str.begin = c
+            str.begin += 1
+        }
+        result.end = str.begin
+        return result
+    }
+}

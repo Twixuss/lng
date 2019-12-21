@@ -1,0 +1,33 @@
+import "os.lng"
+ListType type = char
+List type {
+    begin ^ListType
+    end ^ListType
+    capEnd ^ListType
+    count function: uint { return (end - begin) as uint }
+    capacity function: uint { return (capEnd - begin) as uint }
+    remainingCapacity function: uint { return capacity() - count() }
+    add function(val char = {}) {
+        if remainingCapacity() == 0 {
+            newCapacity uint
+            if capacity() == 0 
+                newCapacity = 1
+            else 
+                newCapacity = capacity() * 2
+            newBegin auto = os.allocate(newCapacity * sizeof ListType) as ^ListType
+            newEnd auto = newBegin + count()
+            newCapEnd auto = newBegin + newCapacity
+            i uint = 0
+            while i < capacity() {
+                ^(newBegin + i) = ^(begin + i)
+                i += 1
+            }
+            os.free(begin)
+            begin = newBegin
+            end = newEnd
+            capEnd = newCapEnd
+        }
+        ^end = val
+        end += 1
+    }
+}

@@ -1,0 +1,16 @@
+makeString function(begin ^char, end ^char): string {
+    result string
+    result.begin = begin
+    result.end = end
+    return result
+}
+makeString function(begin ^char, count uint): string {
+    result string
+    result.begin = begin
+    result.end = begin + count
+    return result
+}
+assert function(val bool) {
+    if !val 
+        ^(0 as ^int) = 0
+}

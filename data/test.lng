@@ -1,0 +1,41 @@
+import "console.lng"
+import "list.lng"
+printList function(list List) {
+    console.write("List:\nCount: ")
+    console.write(list.count())
+    console.write("\nCapacity: ")
+    console.writeLine(list.capacity())
+    while list.begin < list.end {
+        console.writeLine(^list.begin)
+        list.begin += 1
+    }
+}
+main function {
+    inputBuf [32]char
+    input string = makeString(@inputBuf[0], 32)
+    console.write("Who are you? ")
+    name auto = console.read(input)
+    console.write("Name size: ")
+    console.write(name.count())
+    console.write("\n")
+    console.write("Hello, ")
+    console.write(name)
+    console.write("!\nHow old are you? ")
+    age auto = console.read(input)
+    console.write(age)
+    console.write("? Cool!\n")
+    
+    list List
+    list.add('1')
+    list.add('2')
+    list.add('3')
+    printList(list)
+    list.add('a')
+    list.add('b')
+    list.add('c')
+    printList(list)
+    list.add('D')
+    list.add('E')
+    list.add('F')
+    printList(list)
+}

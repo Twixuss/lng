@@ -1,0 +1,5 @@
+import "common.lng"
+os namespace {
+    allocate function(size uint): ^void #internal
+    free function(ptr ^void) #internal
+}
