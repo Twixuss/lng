@@ -35,6 +35,7 @@ enum ast_type : u8 {
     NodeType_Break,
     NodeType_Continue,
     NodeType_BraceInit,
+    NodeType_Defer,
 };
 
 struct compiler;
@@ -182,10 +183,10 @@ struct node {
 };
 
 struct node_global : node {
-    std::vector<node*> Declarations;
-    std::vector<node_functiondecl*> BinaryOperators[ToInt(binop::Count)];
-    std::vector<node_functiondecl*> AsOperators;
-    std::vector<node_functiondecl*> NegateOperators;
+    list<node*> Declarations;
+    list<node_functiondecl*> BinaryOperators[ToInt(binop::Count)];
+    list<node_functiondecl*> AsOperators;
+    list<node_functiondecl*> NegateOperators;
     inline node_global() : node(NodeType_Global) {}
 };
 
@@ -231,9 +232,10 @@ struct node_expression : node {
 
 struct node_functiondecl : node {
     string_view Identifier = {};
-    std::vector<node_vardecl*> Arguments;
+    list<node_vardecl*> Arguments;
+    list<string_view> TypeArguments;
     scope* Scope = 0;
-    std::vector<node*> Statements = {};
+    list<node*> Statements = {};
     node_type* ReturnType = 0;
     bool IsInternal = false;
     inline node_functiondecl() : node(NodeType_FunctionDecl) {}
@@ -242,7 +244,7 @@ struct node_functiondecl : node {
 struct node_functioncall : node_expression {
     string_view Identifier = {};
     node_functiondecl* Declaration = 0;
-    std::vector<node_expression*> Arguments;
+    list<node_expression*> Arguments;
     inline node_functioncall() : node_expression(NodeType_FunctionCall) {}
 };
 
@@ -271,7 +273,7 @@ struct node_memberfuncdecl : node {
 
 struct node_typedecl : node {
     string_view Identifier = {};
-    std::vector<node*> Members = {};
+    list<node*> Members = {};
     struct {
         node_expression* Expression = 0;
         u64 Value = 0;
@@ -342,24 +344,24 @@ struct node_return : node {
 
 struct node_nsdecl : node {
     string_view Identifier;
-    std::vector<node*> Declarations;
+    list<node*> Declarations;
     inline node_nsdecl() : node(NodeType_NSDecl) {}
 };
 
 struct node_if : node {
     node* Condition = 0;
-    std::vector<node*> Statements;
+    list<node*> Statements;
     inline node_if() : node(NodeType_If) {}
 };
 
 struct node_else : node {
-    std::vector<node*> Statements;
+    list<node*> Statements;
     inline node_else() : node(NodeType_Else) {}
 };
 
 struct node_while : node {
     node* Condition = 0;
-    std::vector<node*> Statements;
+    list<node*> Statements;
     inline node_while() : node(NodeType_While) {}
 };
 
@@ -411,6 +413,11 @@ struct node_braceinit : node_expression {
     inline node_braceinit() : node_expression(NodeType_BraceInit) {}
 };
 
+struct node_defer : node {
+    list<node*> Statements;
+    inline node_defer() : node(NodeType_Defer) {}
+};
+
 #define TOKEN_ADD "+"
 #define TOKEN_SUB "-"
 #define TOKEN_MUL "*"
@@ -419,6 +426,7 @@ struct node_braceinit : node_expression {
 #define TOKEN_NOT "!"
 #define TOKEN_ADDRESS "@"
 #define TOKEN_DEREF "^"
+#define TOKEN_DEFER "defer"
 #define TOKEN_POINTER "^"
 #define TOKEN_MEMBER "."
 #define TOKEN_PAREN_BEGIN "("
@@ -431,12 +439,14 @@ struct node_braceinit : node_expression {
 #define TOKEN_BRACEINIT_END "}"
 #define TOKEN_ARGLIST_BEGIN "("
 #define TOKEN_ARGLIST_END ")"
+#define TOKEN_TYPELIST_BEGIN "<"
+#define TOKEN_TYPELIST_END ">"
 #define TOKEN_RETTYPE_DELIM ":"
 
-u32 Append(message& Message, node_type* Type) {
+size_t Append(message& Message, node_type* Type) {
     auto Column = Message.Column;
     Message.Column = {};
-    u32 Result = [&]() {
+    size_t Result = [&]() {
         switch (Type->Type) {
             case type::Identifier: {
                 auto Ident = (node_type_identifier*)Type;
@@ -495,7 +505,7 @@ std::string ToString(node_type* Type) {
 
 struct scope {
     scope* Parent = 0;
-    std::vector<scope*> Children;
+    list<scope*> Children;
     std::unordered_map<string_view, node_typedecl*> Types;
 };
 
@@ -540,11 +550,14 @@ bool IsStatement(node* Node) {
     return false;
 }
 
-#define PARSE_OK            0 
-#define PARSE_OTHER         1 // Tokens may mean something else
-#define PARSE_FINISH        2 // Reached end of file
-#define PARSE_FAIL          3 
-#define PARSE_FAIL_CONTINUE 4 
+using parse_result = u32;
+
+
+#define PARSE_OK            0
+#define PARSE_OK_FINISH     1
+#define PARSE_FAIL          2 
+#define PARSE_FAIL_FINISH   3 
+#define PARSE_OTHER         4 // Tokens may mean something else
 
 #define LINK_OK 0
 #define LINK_ERROR 1
@@ -567,21 +580,7 @@ struct arch {
     u32 PtrSize = 0;
 };
 
-arch CreateArch(string_view Name, location Location = {}) {
-    arch Result;
-    if (Name == "x86") {
-        Result.Type = arch_type::x86;
-        Result.PtrSize = 4;
-    }
-    else if (Name == "x64") {
-        Result.Type = arch_type::x64;
-        Result.PtrSize = 8;
-    }
-    else {
-        ReportError(Location, "Available arch are: 'x86', 'x64'; got '", Name, "'");
-    }
-    return Result;
-}
+arch CreateArch(string_view Name, location Location = {});
 
 bool CanTakeAddressOf(node* Node) {
     switch (Node->AstType) {
@@ -676,8 +675,12 @@ struct parser {
     u32 NodeIDCounter = 0;
     string_view CustomBinDir;
     string_view CustomTempDir;
-    std::vector<std::string> ImportDirectories;
-    std::vector<void*> DeleteAfterLink;
+    list<directory_stdstring> ImportDirectories;
+    list<void*> DeleteAfterLink;
+    u32 ParseCode = 0;
+    s32 LinkResult = 0;
+    u32 NotConvertibleReason = 0;
+    s64 EvaluatedValue;
 
     parser(lexer* Lexer) : Lexer(Lexer) {}
 
@@ -685,7 +688,7 @@ struct parser {
 #undef new
     struct memory {
         struct block {
-            static constexpr size_t Capacity = 1024 * 1024;
+            static constexpr size_t Capacity = 1024 * 64 - sizeof(void*);
             char Data[Capacity];
             block* Next = 0;
         };
@@ -700,6 +703,10 @@ struct parser {
         block* AllocateBlock() {
             ++BlocksUsed;
             auto Result = VirtualAlloc((void*)(BlocksUsed * sizeof(block)), sizeof(block), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            if (!Result) {
+                auto LastError = GetLastError();
+                assert(0);
+            }
             return new(Result) block;
         }
         void AppendBlock() {
@@ -727,6 +734,18 @@ struct parser {
             return new(Allocate(sizeof(type))) type;
         }
     } Memory;
+    size_t BytesUsed() {
+        size_t Result =
+            sizeof(*this) +
+            Memory.BlocksUsed * memory::block::Capacity +
+            BinDir.capacity() * sizeof(BinDir[0]) +
+            TempDir.capacity() * sizeof(TempDir[0]) +
+            ImportDirectories.capacity() * sizeof(ImportDirectories[0]) +
+            DeleteAfterLink.capacity() * sizeof(DeleteAfterLink[0]);
+        for (auto& Str : ImportDirectories)
+            Result += Str.capacity() * sizeof(Str[0]);
+        return Result;
+    }
 #pragma pop_macro("new")
 
     bool NextToken() { return Lexer->NextToken(); }
@@ -937,7 +956,6 @@ struct parser {
     }
 
     node_type* ParseType();
-    u32 ParseCode = 0;
     node_vardecl* ParseVarDeclInitialExpression(token Identifier, node_type* Type);
     node_vardecl* ParseVarDecl();
     node_expression* ParseExpression();
@@ -946,7 +964,7 @@ struct parser {
     node_functioncall* ParseFunctionCall();
     node_functiondecl* ParseFunDeclArgsAndBody(location Location, string_view Identifier);
     node* ParseDeclaration();
-    node* ParseStatement(const std::vector<node*>& ParentStatements);
+    node* ParseStatement(const list<node*>& ParentStatements);
 
     int LinkNodes();
     int LinkNode(node_assignment* Assignment);
@@ -976,6 +994,7 @@ struct parser {
     int LinkNode(node_break* Index);
     int LinkNode(node_continue* Index);
     int LinkNode(node_braceinit* Braceinit);
+    int LinkNode(node_defer* Defer);
     int LinkNode(node* Node);
 
     binop BinopFromString(string_view Op) {
@@ -1061,7 +1080,7 @@ struct parser {
                 assert(0);
         }
     }
-    std::vector<node*>* GetChildren(node* Node) {
+    list<node*>* GetChildren(node* Node) {
         switch (Node->AstType) {
             case NodeType_Global:
                 return &((node_global*)Node)->Declarations;
@@ -1076,18 +1095,30 @@ struct parser {
             case NodeType_While:
                 return &((node_while*)Node)->Statements;
             case NodeType_TypeDecl:
-                return (std::vector<node*>*) & ((node_typedecl*)Node)->Members;
+                return (list<node*>*) & ((node_typedecl*)Node)->Members;
             case NodeType_Type: {
-                auto Type = (node_type_identifier*)Node;
-                assert(Type->Type == type::Identifier);
-                return (std::vector<node*>*) & Type->Decl->Members;
+                auto Type = (node_type*)Node;
+                switch (Type->Type) {
+                    case type::Pointer: {
+                        auto Ptr = (node_type_pointer*)Node;
+                        assert(Ptr->Next->Type == type::Identifier);
+                        return GetChildren(Ptr->Next);
+                    }
+                    case type::Identifier: {
+                        auto Ident = (node_type_identifier*)Node;
+                        assert(Ident->Type == type::Identifier);
+                        return (list<node*>*)&Ident->Decl->Members;
+                    }
+                    default:
+                        assert(0);
+                }
             }
             default:
                 assert(false);
                 return 0;
         }
     }
-    std::vector<node*>* GetChildrenOfClosestScope(node* Node) {
+    list<node*>* GetChildrenOfClosestScope(node* Node) {
         switch (Node->AstType) {
             case NodeType_Global:
                 return &((node_global*)Node)->Declarations;
@@ -1164,9 +1195,9 @@ struct parser {
         return 0;
     }
     template<class Comp>
-    void GetOverloadMatchingArguments(std::vector<node_functiondecl*>& Result,
-                                      const std::vector<node_functiondecl*>& Candidates,
-                                      const std::vector<node_expression*>& Arguments,
+    void GetOverloadMatchingArguments(list<node_functiondecl*>& Result,
+                                      const list<node_functiondecl*>& Candidates,
+                                      const list<node_expression*>& Arguments,
                                       Comp&& Comparer) {
         for (auto Decl : Candidates) {
             if (Decl->Arguments.size() == Arguments.size()) {
@@ -1209,248 +1240,9 @@ struct parser {
     }
 #define GPFD_STRICT 1
 #define GPFD_NO_ARGS 2
-    int GetPossibleFunctionDecls(node_functioncall* Call, std::vector<node_functiondecl*>& Result, u32 Flags) {
-        auto Search = [&](node* Where) {
-            std::vector<node_functiondecl*> Candidates;
-            for (node* TestNode : *GetChildren(Where)) {
-                node_functiondecl* Decl = 0;
-                if (TestNode->AstType == NodeType_FunctionDecl) {
-                    Decl = (node_functiondecl*)TestNode;
-                }
-                else if (TestNode->AstType == NodeType_MemberFuncDecl) {
-                    Decl = ((node_memberfuncdecl*)TestNode)->Declaration;
-                }
-                if (Decl) {
-                    if (Decl->Identifier == Call->Identifier) {
-                        Candidates.push_back(Decl);
-                    }
-                }
-            }
-            for (auto Decl : Candidates) {
-                // HACK: Link all headers earlier
-                Decl->Parent = Where;
-                if (LinkHeader(Decl) != LINK_OK)
-                    return LINK_FATAL;
-                //////////
-            }
+    int GetPossibleFunctionDecls(node_functioncall* Call, list<node_functiondecl*>& Result, u32 Flags);
 
-            if (Flags & GPFD_NO_ARGS) {
-                Result.insert(Result.end(), Candidates.begin(), Candidates.end());
-                return LINK_OK;
-            }
-
-            if (Flags & GPFD_STRICT)
-                GetOverloadMatchingArguments(Result, Candidates, Call->Arguments, Equals);
-            else {
-                bool (parser:: * fun)(node_expression*, node_expression*) = &parser::ImplicitlyConvertible;
-                GetOverloadMatchingArguments(Result, Candidates, Call->Arguments, std::bind(this, fun));
-            }
-
-            return LINK_OK;
-        };
-        auto SearchScopeNode = GetSearchScopeNode();
-        if (SearchScopeNode) {
-            if (Search(SearchScopeNode) != LINK_OK)
-                return LINK_FATAL;
-        }
-        else {
-            node* SearchNode = GetNextFunctionHolder(Call);
-            while (true) {
-                if (Search(SearchNode) != LINK_OK)
-                    return LINK_FATAL;
-                SearchNode = GetNextFunctionHolder(SearchNode);
-                if (!SearchNode) {
-                    break;
-                }
-            }
-        }
-        return LINK_OK;
-    }
-
-    s32 LinkResult = 0;
-
-    node_functiondecl* GetMatchingOverload(node_functioncall* Call) {
-#if 0
-        std::vector<node_functiondecl*> PossibleOverloads;
-        if (GetPossibleFunctionDecls(Call, PossibleOverloads, 0) != LINK_OK) {
-            LinkResult = LINK_FATAL;
-            return 0;
-        }
-        if (PossibleOverloads.size() == 0) {
-            PossibleOverloads.clear();
-            if (GetPossibleFunctionDecls(Call, PossibleOverloads, GPFD_NO_ARGS) != LINK_OK) {
-                LinkResult = LINK_FATAL;
-                return 0;
-            }
-            PrintNotDeclaredError(Call->Location, MakeHeaderString(Call));
-            if (PossibleOverloads.size() != 0) {
-                ReportMessage("    Available overloads:");
-                for (auto Decl : PossibleOverloads) {
-                    ReportMessage("        ", MakeHeaderString(Decl));
-                }
-                ReportMessage();
-            }
-            LinkResult = LINK_FATAL;
-            return 0;
-        }
-        else if (PossibleOverloads.size() > 1) {
-            for (auto Decl : PossibleOverloads) {
-                bool Match = true;
-                for (int i=0; i < Call->Arguments.size(); ++i) {
-                    if (Call->Arguments[i]->Flags & AstFlag_Known) {
-                        if (IsInteger(Call->Arguments[i]->Type)) {
-                            auto Eval = EvaluateInt(Call->Arguments[i]);
-                            if (Eval < 0) {
-                                for (auto Decl : PossibleOverloads) {
-                                    if (IsSigned(Decl->Arguments[i]->Type) && Fits(Eval, GetTypeDecl(Decl->Arguments[i]->Type))) {
-                                        Call->Declaration = Decl;
-                                        goto End;
-                                    }
-                                }
-                            }
-                            else {
-                                for (auto Decl : PossibleOverloads) {
-                                    if (IsUnsigned(Decl->Arguments[i]->Type) && Fits(Eval, GetTypeDecl(Decl->Arguments[i]->Type))) {
-                                        Call->Declaration = Decl;
-                                        goto End;
-                                    }
-                                }
-                                for (auto Decl : PossibleOverloads) {
-                                    if (IsSigned(Decl->Arguments[i]->Type) && Fits(Eval, GetTypeDecl(Decl->Arguments[i]->Type))) {
-                                        Call->Declaration = Decl;
-                                        goto End;
-                                    }
-                                }
-                            }
-                            goto End;
-                        }
-                    }
-                    if (!Equals(Call->Arguments[i]->Type, Decl->Arguments[i]->Type)) {
-                        Match = false;
-                        break;
-                    }
-                }
-                if (Match) {
-                    Call->Declaration = Decl;
-                    break;
-                }
-            }
-        End:
-            if (!Call->Declaration) {
-                ReportError(Call->Location, "Function '", Call->Identifier, "' is ambiguous");
-                ReportMessage("    Matching overloads:");
-                for (auto Decl : PossibleOverloads) {
-                    ReportMessage("        ", MakeHeaderString(Decl));
-                }
-                ReportMessage();
-                LinkResult = LINK_FATAL;
-                return 0;
-            }
-        }
-        else
-            Call->Declaration = PossibleOverloads[0];
-#endif
-        std::vector<node_functiondecl*> Overloads;
-        auto SearchInNode = [&](node* Where, auto&& Predicate) {
-            for (node* TestNode : *GetChildren(Where)) {
-                node_functiondecl* Decl = 0;
-                if (TestNode->AstType == NodeType_FunctionDecl) {
-                    Decl = (node_functiondecl*)TestNode;
-                }
-                else if (TestNode->AstType == NodeType_MemberFuncDecl) {
-                    Decl = ((node_memberfuncdecl*)TestNode)->Declaration;
-                }
-                if (Decl) {
-                    if (Predicate(Decl)) {
-                        Overloads.push_back(Decl);
-                    }
-                }
-            }
-            //for (auto Decl : Candidates) {
-            //    // HACK: Link all headers earlier
-            //    Decl->Parent = Where;
-            //    if (LinkHeader(Decl) != LINK_OK)
-            //        return LINK_FATAL;
-            //    //////////
-            //}
-        };
-        auto IdentifierMatcher = [&](node_functiondecl* Decl) {
-            return Decl->Identifier == Call->Identifier;
-        };
-        auto Matcher = [&](node_functiondecl* Decl) {
-            if (Decl->Identifier != Call->Identifier)
-                return false;
-            if (Decl->Arguments.size() == Call->Arguments.size()) {
-                if (LinkHeader(Decl) != LINK_OK)
-                    assert(0);
-                for (int i = 0; i < Call->Arguments.size(); ++i) {
-                    if (!ImplicitlyConvertible(Call->Arguments[i], Decl->Arguments[i]->Type))
-                        return false;
-                }
-                return true;
-            }
-            else if (Decl->Arguments.size() > Call->Arguments.size()) {
-                if (HasDefaultArguments(Decl)) {
-                    int i=0;
-                    for (; i < Call->Arguments.size(); ++i) {
-                        if (!ImplicitlyConvertible(Call->Arguments[i], Decl->Arguments[i]->Type))
-                            return false;
-                    }
-                    for (; i < Decl->Arguments.size(); ++i) {
-                        if (!Decl->Arguments[i]->InitialExpression)
-                            return false;
-                    }
-                    return true;
-                }
-                else {
-                    return false;
-                }
-            }
-            else {
-                return false;
-            }
-        };
-        auto SearchScopeNode = GetSearchScopeNode();
-        auto Search = [&](auto&& Predicate) {
-            if (SearchScopeNode) {
-                SearchInNode(SearchScopeNode, Predicate);
-            }
-            else {
-                node* SearchNode = GetNextFunctionHolder(Call);
-                while (true) {
-                    SearchInNode(SearchNode, Predicate);
-                    SearchNode = GetNextFunctionHolder(SearchNode);
-                    if (!SearchNode) {
-                        break;
-                    }
-                }
-            }
-        };
-
-        Search(Matcher);
-        if (Overloads.size() == 0) {
-            Search(IdentifierMatcher);
-            PrintNotDeclaredError(Call->Location, MakeHeaderString(Call));
-            if (Overloads.size() != 0) {
-                ReportMessage("    Available overloads:");
-                for (auto Decl : Overloads) {
-                    ReportMessage("        ", MakeHeaderString(Decl));
-                }
-                ReportMessage();
-            }
-        }
-        else if (Overloads.size() > 1) {
-            ReportError(Call->Location, "Function '", Call->Identifier, "' is ambiguous");
-            ReportMessage("    Matching overloads:");
-            for (auto Decl : Overloads) {
-                ReportMessage(message::column(48), Decl->Location, ": ", MakeHeaderString(Decl));
-            }
-            ReportMessage();
-        }
-        else
-            return Overloads[0];
-        return 0;
-    }
+    node_functiondecl* GetMatchingOverload(node_functioncall* Call);
 
     std::stack<node*> SearchScopeNodeStack;
     node* GetSearchScopeNode() {
@@ -1478,17 +1270,11 @@ struct parser {
         }
         return Declaration;
     }
-    node_typedecl* FindTypeDecl(location Location, string_view TypeIdentifier) {
-        node_typedecl* Declaration = TryFindTypeDecl(TypeIdentifier);
-        if (!Declaration) {
-            ReportError(Location, "Type '", TypeIdentifier, "' is not declared");
-        }
-        return Declaration;
-    }
+    node_typedecl* FindTypeDecl(location Location, string_view TypeIdentifier);
 
     node_vardecl* TryFindVarDecl(node* ExprNode, string_view Identifier) {
         node_vardecl* Result = 0;
-        auto Search = [&](std::vector<node*>& Declarations) {
+        auto Search = [&](list<node*>& Declarations) {
             for (node* TestNode : Declarations) {
                 if (TestNode->AstType == NodeType_VarDecl) {
                     node_vardecl& Var = *(node_vardecl*)TestNode;
@@ -1533,7 +1319,7 @@ struct parser {
         else {
             node* SearchNode = GetNextVariableHolder(ExprNode);
             while (SearchNode) {
-                std::vector<node*>* Declarations = GetChildren(SearchNode);
+                list<node*>* Declarations = GetChildren(SearchNode);
                 for (node* TestNode : *Declarations) {
                     if (TestNode == ExprNode) {
                         if (SearchNode->AstType == NodeType_FunctionDecl) // Not search for declarations after this statemtent
@@ -1578,18 +1364,12 @@ struct parser {
         }
         return Result;
     }
-    node_vardecl* FindVarDecl(node* ExprNode, location Location, string_view Identifier) {
-        auto Result = TryFindVarDecl(ExprNode, Identifier);
-        if (!Result) {
-            ReportError(Location, "Variable '", Identifier, "' is not declared");
-        }
-        return Result;
-    }
+    node_vardecl* FindVarDecl(node* ExprNode, location Location, string_view Identifier);
     node_functiondecl* TryFindFunctionDecl(node* ExprNode, string_view Identifier) {
         node_functiondecl* Result = 0;
         auto SearchScopeNode = GetSearchScopeNode();
         if (SearchScopeNode) {
-            std::vector<node*>& Declarations = *GetChildren(SearchScopeNode);
+            list<node*>& Declarations = *GetChildren(SearchScopeNode);
             for (node* Node : Declarations) {
                 if (Node->AstType == NodeType_FunctionDecl) {
                     node_functiondecl* Decl = (node_functiondecl*)Node;
@@ -1603,7 +1383,7 @@ struct parser {
         else {
             node* SearchNode = GetNextFunctionHolder(ExprNode);
             while (SearchNode) {
-                std::vector<node*>& Declarations = *GetChildren(SearchNode);
+                list<node*>& Declarations = *GetChildren(SearchNode);
                 for (node* Node : Declarations) {
                     if (Node->AstType == NodeType_FunctionDecl) {
                         node_functiondecl* Decl = (node_functiondecl*)Node;
@@ -1624,7 +1404,7 @@ struct parser {
         node_nsdecl* Result = 0;
         node* SearchNode = GetNextNamespaceHolder(ExprNode);
         while (SearchNode) {
-            std::vector<node*>& Declarations = *GetChildren(SearchNode);
+            list<node*>& Declarations = *GetChildren(SearchNode);
             for (node* Node : Declarations) {
                 if (Node->AstType == NodeType_NSDecl) {
                     node_nsdecl* NSDecl = (node_nsdecl*)Node;
@@ -1640,13 +1420,7 @@ struct parser {
         }
         return Result;
     }
-    node_nsdecl* FindNamespaceDecl(node* ExprNode, location Location, string_view Identifier) {
-        auto Result = TryFindNamespaceDecl(ExprNode, Identifier);
-        if (!Result) {
-            ReportError(Location, "Namespace '", Identifier, "' is not declared");
-        }
-        return Result;
-    }
+    node_nsdecl* FindNamespaceDecl(node* ExprNode, location Location, string_view Identifier);
 
     std::string MakeHeaderString(node_functioncall* Call) {
         string_builder Builder;
@@ -1680,7 +1454,7 @@ struct parser {
 
     struct found_import {
         FILE* File;
-        char FullPath[256];
+        directory_buffer FullPath;
     };
 
     found_import FindImportFile(string_view Name);
@@ -1859,95 +1633,13 @@ struct parser {
             Type == Type_string;
     }
 #define NCR_DOES_NOT_FIT 1
-    u32 NotConvertibleReason = 0;
-    s64 EvaluatedValue;
-    inline bool ImplicitlyConvertible(node_expression* Src, node_expression* Dst) {
-        return ImplicitlyConvertible(Src->Type, Dst->Type, Src);
-    }
-    inline bool ImplicitlyConvertible(node_expression* Src, node_type* DstType) {
-        return ImplicitlyConvertible(Src->Type, DstType, Src);
-    }
-    inline bool ImplicitlyConvertible(node_type* SrcType, node_type* DstType, node* SrcNode) {
-        NotConvertibleReason = 0;
-        if (SrcType->Type == type::Identifier && DstType->Type == type::Identifier) {
-            auto Src = (node_type_identifier*)SrcType;
-            auto Dst = (node_type_identifier*)DstType;
-            if (Src->Decl == Dst->Decl) {
-                return true;
-            }
-            else {
-                if (SrcNode->Flags & AstFlag_Known) {
-                    if (IsInteger(Dst->Decl) && IsInteger(Src->Decl)) {
-                        EvaluatedValue = EvaluateInt(SrcNode);
-                        if (Fits(EvaluatedValue, Dst->Decl))
-                            return true;
-                        else {
-                            NotConvertibleReason = NCR_DOES_NOT_FIT;
-                            return false;
-                        }
-                    }
-                    else {
-                        return false;
-                    }
-                }
-                else {
-                    if (IsInteger(Src) && IsInteger(Dst)) {
-                        if (Fits(Src->Decl, Dst->Decl))
-                            return true;
-                        else {
-                            NotConvertibleReason = NCR_DOES_NOT_FIT;
-                            return false;
-                        }
-                    }
-                    else {
-                        return false;
-                    }
-                }
-            }
-        }
-        else {
-            if (IsPointer(DstType)) {
-                auto DstPtr = (node_type_pointer*)DstType;
-                if (IsInteger(SrcType)) {
-                    return SrcNode->AstType == NodeType_Literal && ((node_literal*)SrcNode)->Value.Int == 0;
-                }
-                else if (IsPointer(SrcType)) {
-                    return Equals(DstPtr->Next, TypeIdentifier_void) || Equals(SrcType, DstType);
-                }
-                else {
-                    return false;
-                }
-            }
-            else {
-                return Equals(SrcType, DstType);
-            }
-        }
-    }
-    inline bool EnsureImplicitlyConvertible(node_expression* Src, node_expression* Dst, location Location) {
-        return EnsureImplicitlyConvertible(Src->Type, Dst->Type, Src, Location);
-    }
-    inline bool EnsureImplicitlyConvertible(node_expression* Src, node_type* DstType, location Location) {
-        return EnsureImplicitlyConvertible(Src->Type, DstType, Src, Location);
-    }
-    inline bool EnsureImplicitlyConvertible(node_type* SrcType, node_type* DstType, node* SrcNode, location Location) {
-        if (ImplicitlyConvertible(SrcType, DstType, SrcNode)) {
-            return true;
-        }
-        switch (NotConvertibleReason) {
-            case NCR_DOES_NOT_FIT:
-                ReportError(Location, "Can't convert from '", SrcType, "' to '", DstType, "'. Evaluated value '", EvaluatedValue, "' does not fit into destination range");
-                break;
-            default:
-                ReportError(Location, "Can't convert from '", SrcType, "' to '", DstType, "'");
-                break;
-        }
-        return false;
-    }
-    inline bool IsIdentifierValid(string_view Identifier) {
-        return
-            Identifier != "sizeof" &&
-            Identifier != "type";
-    }
+    bool ImplicitlyConvertible(node_expression* Src, node_expression* Dst);
+    bool ImplicitlyConvertible(node_expression* Src, node_type* DstType);
+    bool ImplicitlyConvertible(node_type* SrcType, node_type* DstType, node* SrcNode);
+    bool EnsureImplicitlyConvertible(node_expression* Src, node_expression* Dst, location Location);
+    bool EnsureImplicitlyConvertible(node_expression* Src, node_type* DstType, location Location);
+    bool EnsureImplicitlyConvertible(node_type* SrcType, node_type* DstType, node* SrcNode, location Location);
+    bool IsIdentifierValid(string_view Identifier);
 private:
     static void FreeScope(scope* Scope) {
         for (scope* Ch : Scope->Children) {

@@ -25,17 +25,43 @@ main function {
     console.write(age)
     console.write("? Cool!\n")
     
-    list List
+    if true {
+        myType type = int
+    }
+    var myType = 10 
+    
+    list auto = os.allocate(sizeof List) as ^List
+    defer console.write("Defer 1!\n")
+    defer console.write("Defer 2!\n")
+    defer { 
+        console.write("Free!\n")
+        os.free(list)
+    }
     list.add('1')
     list.add('2')
     list.add('3')
-    printList(list)
+    printList(^list)
     list.add('a')
     list.add('b')
     list.add('c')
-    printList(list)
+    printList(^list)
     list.add('D')
     list.add('E')
     list.add('F')
-    printList(list)
+    printList(^list)
+    
+    //file auto = os.openFile("data\\temp\\hello_mister", IOF.read | IOF.write | IOF.create)
+    file auto = os.openFile("data\\temp\\hello_mister", "r+b")
+    assert(file.good())
+    defer os.closeFile(file)
+    
+    file.write("Hello, mister!")
+
+    testRead auto = os.allocate(14) as ^char
+    defer os.free(testRead)
+    
+    file.seek(0, Seek.set)
+    file.read(testRead, 14)
+    
+    console.writeLine(makeString(testRead, 14))
 }

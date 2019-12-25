@@ -18,11 +18,12 @@ List type {
             newEnd auto = newBegin + count()
             newCapEnd auto = newBegin + newCapacity
             i uint = 0
-            while i < capacity() {
+            while i < count() {
                 ^(newBegin + i) = ^(begin + i)
                 i += 1
             }
-            os.free(begin)
+            if begin != 0
+                os.free(begin)
             begin = newBegin
             end = newEnd
             capEnd = newCapEnd

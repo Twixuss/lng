@@ -1,5 +1,5 @@
 #pragma once
-#include "common.h"
+#include "..\common.h"
 enum token_type : u8 {
     TokenType_Null,
     TokenType_Comment,
@@ -25,9 +25,9 @@ struct token {
 };
 
 struct lexer {
-    std::vector<token> Tokens;
-    std::vector<string_view> Lines;
-    std::vector<std::string> ConvertedMultilineStringLiterals;
+    list<token> Tokens;
+    list<string_view> Lines;
+    list<std::string> ConvertedMultilineStringLiterals;
     b32 Success;
     void Process(string_view FileContents);
     bool NextToken();
@@ -40,17 +40,27 @@ struct lexer {
 
     u32 TokenIndex = 0;
     token CursorToken = {};
+    size_t BytesUsed() {
+        size_t Result =
+            sizeof(*this) +
+            Tokens.capacity() * sizeof(Tokens[0]) +
+            Lines.capacity() * sizeof(Lines[0]) +
+            ConvertedMultilineStringLiterals.capacity() * sizeof(ConvertedMultilineStringLiterals[0]);
+        for (auto& Str : ConvertedMultilineStringLiterals)
+            Result += Str.capacity() * sizeof(Str[0]);
+        return Result;
+    }
 };
 
 bool IsOverflowing(string_view Num) {
     string_view Max = "18446744073709551615";
-    u32 MaxCount = Max.Count();
+    size_t MaxCount = Max.Count();
     if (Num.Count() > Max.Count())
         return true;
     else if (Num.Count() < Max.Count())
         return false;
     else {
-        for (u32 i=0; i < MaxCount; ++i, Max.Begin++, Num.Begin++) {
+        for (size_t i=0; i < MaxCount; ++i, Max.Begin++, Num.Begin++) {
             if (*Num.Begin > * Max.Begin)
                 return true;
             else if (*Num.Begin < *Max.Begin)
@@ -59,34 +69,3 @@ bool IsOverflowing(string_view Num) {
         return false;
     }
 }
-
-#define LINE_FORMAT " %*u. "
-void PrintMessages() {
-    HANDLE ConsoleHandle = GetStdHandle(STD_OUTPUT_HANDLE);
-    for (auto& Msg : GlobalCompiler->Messages) {
-        puts(Msg.String);
-        auto Loc = Msg.Location;
-        if (Loc.Line) {
-            u32 LineLength = (u32)log10(Loc.Line + 1) + 1;
-            SetConsoleTextAttribute(ConsoleHandle, 0x08);
-            if (Loc.LineView[0].Begin)
-                printf("\n" LINE_FORMAT "%s\n", LineLength, Loc.Line - 1, ToString(Loc.LineView[0]).data());
-            else
-                puts("\n~~~ start of file ~~~");
-            SetConsoleTextAttribute(ConsoleHandle, 0x07);
-            printf(LINE_FORMAT "%s", LineLength, Loc.Line, std::string(Loc.LineView[1].Begin, Loc.TokenView.Begin).data());
-            SetConsoleTextAttribute(ConsoleHandle, 0x47);
-            printf("%s", ToString(Loc.TokenView).data());
-            SetConsoleTextAttribute(ConsoleHandle, 0x07);
-            printf("%s\n", std::string(Loc.TokenView.End, Loc.LineView[1].End).data());
-            SetConsoleTextAttribute(ConsoleHandle, 0x08);
-            if (Loc.LineView[2].Begin)
-                printf(LINE_FORMAT "%s\n", LineLength, Loc.Line + 1, ToString(Loc.LineView[2]).data());
-            else
-                puts("~~~ end of file ~~~");
-            SetConsoleTextAttribute(ConsoleHandle, 0x07);
-            puts("");
-        }
-    }
-}
-#undef LINE_FORMAT

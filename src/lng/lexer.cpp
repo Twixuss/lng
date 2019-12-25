@@ -113,7 +113,7 @@ void lexer::Process(string_view FileContents) {
         Token.Location.LineView[1] = Lines[Token.Location.Line - 1];
         if(Token.Location.Line < Lines.size())
             Token.Location.LineView[2] = Lines[Token.Location.Line];
-        Token.Location.FileView = GlobalCompiler->CompilingFilePaths.back();
+        Token.Location.FileView = compiler::Instance->CompilingFilePaths.back();
         Tokens.push_back(std::move(Token));
     };
     auto ResetToken = [&]() {

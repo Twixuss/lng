@@ -1,4 +1,5 @@
 #pragma once
+#pragma warning(disable:4996)
 #include <stdio.h>
 #include <stdint.h>
 #include <crtdbg.h>
@@ -7,14 +8,12 @@
 
 #include <string>
 #include <vector>
+#include <utility>
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
-
-#define assert(Expr) if(!(Expr)) { *(int*)0 = 0; exit(-1); }
-
-#define NotImplemented() assert(0)
+#define COUNT_OF(x) (sizeof(x) / sizeof(*x))
 
 struct LeakChecker {
     char* Name = 0;
@@ -34,6 +33,13 @@ struct LeakChecker {
 #define CONCAT2(a, b) CONCAT(a, b)
 #define LEAK_CHECKER(name) LeakChecker CONCAT2(LeakChecker_, __LINE__)(name)
 
+#ifdef BUILD_DEBUG
+#define assert(Expr) if(!(Expr)) { *(int*)0 = 0; exit(-1); }
+#else
+#define assert(Expr) if(!(Expr)) { puts("Assertion failed: " #Expr); puts("File: " __FILE__); puts("Line: " STRINGIZE(__LINE__)); exit(-1); }
+#endif
+#define NotImplemented() assert(0)
+
 using s8  = int8_t;
 using s16 = int16_t;
 using s32 = int32_t;
@@ -45,10 +51,156 @@ using u32 = uint32_t;
 using u64 = uint64_t;
 using f32 = float;
 using f64 = double;
+using wchar = wchar_t;
 
+template<class type>
+auto CopyBuffer(type* Dst, const type* Src, size_t Count) {
+    return memcpy(Dst, Src, Count * sizeof(type));
+}
+auto StrCpy(char* Dst, const char* Src) {
+    return strcpy(Dst, Src);
+}
+auto StrCpy(wchar* Dst, const wchar* Src) {
+    return wcscpy(Dst, Src);
+}
+auto StrLen(const char* Src) {
+    return strlen(Src);
+}
+auto StrLen(const wchar* Src) {
+    return wcslen(Src);
+}
 template<class type> type Min(type A, type B) { return A > B ? B : A; }
 template<class type> type Max(type A, type B) { return A > B ? A : B; }
 
+#if 0
+#pragma push_macro("new")
+#undef new
+template<class type>
+struct list {
+    using iterator = type*;
+    using const_iterator = const type*;
+    using reverse_iterator = std::reverse_iterator<type*>;
+    using reverse_const_iterator = std::reverse_iterator<const type*>;
+    type* Begin = 0;
+    type* End = 0;
+    type* CapEnd = 0;
+    list() = default;
+    list(std::initializer_list<type> l) {
+        Begin = (type*)malloc(l.size() * sizeof(type));
+        CapEnd = End = Begin + l.size();
+        CopyBuffer(Begin, l.begin(), l.size());
+    }
+    ~list() {
+        clear();
+        free(Begin);
+    }
+    void clear() {
+        for (auto Src = Begin; Src < End; ++Src) {
+            Src->~type();
+        }
+        End = Begin;
+    }
+    size_t count() const { return End - Begin; }
+    size_t capacity() const { return CapEnd - Begin; }
+    size_t remainingCapacity() const { return capacity() - count(); }
+    void reallocate(size_t targetSize) {
+        size_t newCapacity = capacity();
+        if (newCapacity == 0)
+            newCapacity = 1;
+        while (newCapacity < targetSize)
+            newCapacity *= 2;
+        auto newBegin = (type*)malloc(newCapacity * sizeof(type));
+        auto newEnd = newBegin + count();
+        auto newCapEnd = newBegin + newCapacity;
+        size_t i = 0;
+        while (i < count()) {
+            new(newBegin + i) type(std::move(Begin[i]));
+            ++i;
+        }
+        clear();
+        free(Begin);
+        Begin = newBegin;
+        End = newEnd;
+        CapEnd = newCapEnd;
+    }
+    void ensureCapacity(size_t targetSize) {
+        if (capacity() < targetSize)
+            reallocate(targetSize);
+    }
+    template<class... args>
+    type& emplace_back(args&&... Args) {
+        ensureCapacity(count() + 1);
+        return *new(End++) type(std::forward<args>(Args)...);
+    }
+    type& add(const type& val) {
+        return emplace_back(val);
+    }
+    void insert(type* where, const list<type>& range) {
+        assert(where >= Begin);
+        assert(where <= End);
+        if (capacity() < count() + range.size()) {
+            auto targetSize = count() + range.size();
+            size_t newCapacity = capacity();
+            if (newCapacity == 0)
+                newCapacity = 1;
+            while (newCapacity < targetSize)
+                newCapacity *= 2;
+            auto newBegin = (type*)malloc(newCapacity * sizeof(type));
+            auto newEnd = newBegin + count();
+            auto newCapEnd = newBegin + newCapacity;
+            type* Dst = newBegin;
+            for (auto Src = Begin; Src < where; ) {
+                new(Dst++) type(std::move(*Src++));
+            }
+            for (auto Src = range.Begin; Src < range.End; ) {
+                new(Dst++) type(*Src++);
+            }
+            for (auto Src = where; Src < End; ) {
+                new(Dst++) type(std::move(*Src++));
+            }
+            clear();
+            free(Begin);
+            Begin = newBegin;
+            End = newEnd;
+            CapEnd = newCapEnd;
+        }
+        else {
+            auto Src = End - 1;
+            auto Dst = Src + range.size();
+            while (Src >= where) {
+                new(Dst++) type(std::move(*Src++));
+            }
+            Dst = where;
+            Src = range.Begin;
+            while (Src < range.End) {
+                new(Dst++) type(*Src++);
+            }
+        }
+    }
+    iterator begin() { return Begin; }
+    iterator end() { return End; }
+    const_iterator begin() const { return Begin; }
+    const_iterator end() const { return End; }
+    reverse_iterator rbegin() { return reverse_iterator(End); }
+    reverse_iterator rend() { return reverse_iterator(Begin); }
+    reverse_const_iterator rbegin() const { return reverse_const_iterator(End); }
+    reverse_const_iterator rend() const { return reverse_const_iterator(Begin); }
+    type& first() { return *Begin; }
+    const type& first() const { return *Begin; }
+    type& last() { return End[-1]; }
+    const type& last() const { return End[-1]; }
+    type& operator[](size_t i) { return Begin[i]; }
+    const type& operator[](size_t i) const { return Begin[i]; }
+};
+#pragma pop_macro("new")
+template<class type>
+inline auto Reverse(list<type>& List) {
+    return range(List.rbegin(), List.rend());
+}
+#else
+template<class type>
+using list = std::vector<type>;
+#endif
 template<class iterator>
 struct range {
     iterator Begin, End;
@@ -60,36 +212,104 @@ template<class container>
 inline auto Reverse(container& Container) {
     return range(std::rbegin(Container), std::rend(Container));
 }
-struct string_span {
-    char* Begin = 0;
-    char* End = 0;
-    inline string_span() {}
-    inline string_span(char* Begin, char* End) : Begin(Begin), End(End) {}
-    inline string_span(char* Strz) : Begin(Strz), End(Strz + strlen(Strz)) {}
-    inline string_span(char* String, size_t Count) : Begin(String), End(String + Count) {}
-    inline string_span(std::string& String) : Begin(String.data()), End(String.data() + String.size()) {}
+template<class char_t>
+struct basic_string_span {
+    char_t* Begin = 0;
+    char_t* End = 0;
+    inline basic_string_span() {}
+    inline basic_string_span(char_t* Begin, char_t* End) : Begin(Begin), End(End) {}
+    inline basic_string_span(char_t* Strz) : basic_string_span(Strz, Strz + strlen(Strz)) {}
+    inline basic_string_span(char_t* String, size_t Count) : basic_string_span(String, String + Count) {}
+    inline basic_string_span(std::basic_string<char_t>& String) : basic_string_span(String.data(), String.data() + String.size()) {}
     inline size_t Count() const { return End - Begin; }
-    inline char* begin() { return Begin; }
-    inline char* end() { return End; }
-    inline char& operator[](u32 I) { return Begin[I]; }
-    inline char operator[](u32 I) const { return Begin[I]; }
+    inline char_t* begin() { return Begin; }
+    inline char_t* end() { return End; }
+    inline char_t& operator[](u32 I) { return Begin[I]; }
+    inline char_t operator[](u32 I) const { return Begin[I]; }
 };
 
-struct string_view {
-    const char* Begin = 0;
-    const char* End = 0;
-    inline string_view() {}
-    inline string_view(const char* Begin, const char* End) : Begin(Begin), End(End) {}
-    inline string_view(const char* Strz) : Begin(Strz), End(Strz + strlen(Strz)) {}
-    inline string_view(const char* String, size_t Count) : Begin(String), End(String + Count) {}
-    inline string_view(const std::string& String) : Begin(String.data()), End(String.data() + String.size()) {}
-    inline string_view(string_span Span) : Begin(Span.Begin), End(Span.End) {}
+template<class char_t>
+struct basic_string_view;
+
+template<class char_t, size_t Capacity>
+struct basic_string_buffer {
+    char_t Begin[Capacity];
+    char_t* End = Begin;
+    inline basic_string_buffer() {}
+    inline basic_string_buffer(const basic_string_buffer& Rhs) {
+        CopyBuffer(Begin, Rhs.Begin, Rhs.Count());
+        End = Begin + Rhs.Count();
+    }
+    inline basic_string_buffer(char_t* B, char_t* E) : End(Begin + E - B) {
+        CopyBuffer(Begin, B, End - Begin)
+    }
+    inline basic_string_buffer(char_t* Strz) : basic_string_buffer(Strz, Strz + StrLen(Strz)) {}
+    inline basic_string_buffer(char_t* String, size_t Count) : basic_string_buffer(String, String + Count) {}
+    inline basic_string_buffer(std::string& String) : basic_string_buffer(String.data(), String.data() + String.size()) {}
+    inline basic_string_buffer(basic_string_span<char_t> Span) : basic_string_buffer(Span.Begin, Span.End) {}
+
+    void Trim(size_t NewSize) {
+        assert(NewSize < Count());
+        End = Begin + NewSize;
+    }
+    size_t RemainingCapacity() {
+        return Capacity - Count();
+    }
+    void Append(basic_string_view<char_t> Str) {
+        assert(Str.Count() <= RemainingCapacity());
+        CopyBuffer(End, Str.Begin, Str.Count());
+        End += Str.Count();
+    }
+    void Append(const char_t* B, const char_t* E) {
+        Append({B, E});
+    }
+    void Append(const char_t* B, size_t C) {
+        Append({B, B + C});
+    }
+    inline size_t Count() const { return End - Begin; }
+    inline char_t* begin() const { return Begin; }
+    inline char_t* end() const { return End; }
+    inline char_t& operator[](u32 I) { return Begin[I]; }
+    inline char_t operator[](u32 I) const { return Begin[I]; }
+};
+
+template<class char_t>
+struct basic_string_view {
+    const char_t* Begin = 0;
+    const char_t* End = 0;
+    inline basic_string_view() {}
+    inline basic_string_view(const char_t* Begin, const char_t* End) : Begin(Begin), End(End) {}
+    inline basic_string_view(const char_t* Strz) : basic_string_view(Strz, Strz + strlen(Strz)) {}
+    inline basic_string_view(const char_t* String, size_t Count) : basic_string_view(String, String + Count) {}
+    inline basic_string_view(const std::string& String) : basic_string_view(String.data(), String.data() + String.size()) {}
+    inline basic_string_view(basic_string_span<char_t> Span) : basic_string_view(Span.Begin, Span.End) {}
+    template<size_t Capacity>
+    inline basic_string_view(basic_string_buffer<char_t, Capacity> Buffer) : basic_string_view(Buffer.Begin, Buffer.End) {}
 
     inline size_t Count() const { return End - Begin; }
-    inline const char* begin() const { return Begin; }
-    inline const char* end() const { return End; }
-    inline char operator[](u32 I) const { return Begin[I]; }
+    inline const char_t* begin() const { return Begin; }
+    inline const char_t* end() const { return End; }
+    inline char_t operator[](u32 I) const { return Begin[I]; }
 };
+
+using string_span = basic_string_span<char>;
+using wstring_span = basic_string_span<wchar>;
+
+template<size_t Capacity = 256>
+using string_buffer = basic_string_buffer<char, Capacity>;
+template<size_t Capacity = 256>
+using wstring_buffer = basic_string_buffer<wchar, Capacity>;
+
+using string_view = basic_string_view<char>;
+using wstring_view = basic_string_view<wchar>;
+
+using directory_span = string_span;
+using directory_buffer = string_buffer<MAX_PATH>;
+using directory_view = string_view;
+
+using directory_stdstring = std::string;
+
+#define DIR_LITERAL(x) x
 
 struct location {
     string_view TokenView;
@@ -106,7 +326,10 @@ inline bool StringsAreEqual(const char* A, const char* B, size_t Count) {
     }
     return true;
 }
-inline bool StringsAreEqualSafe(const char* A, const char* B, size_t Count) {
+template<class t>
+constexpr bool is_character = std::is_same_v<t, char> || std::is_same_v<t, wchar>;
+template<class char_t, class = std::enable_if_t<is_character<char_t>>>
+inline bool StringsAreEqualSafe(const char_t* A, const char_t* B, size_t Count) {
     for (int I = 0; I < Count; ++I) {
         if (*A ^ *B) {
             return false;
@@ -156,10 +379,25 @@ struct hash<::string_view> {
 
 }
 
-inline std::string ToString(string_view String) {
-    std::string Result;
+template<class char_t, size_t Capacity>
+inline std::basic_string<char_t> ToString(const basic_string_buffer<char_t, Capacity>& String) {
+    std::basic_string<char_t> Result;
     Result.resize(String.Count());
-    memcpy(Result.data(), String.Begin, String.Count());
+    CopyBuffer(Result.data(), String.Begin, String.Count());
+    return Result;
+}
+template<class char_t>
+inline std::basic_string<char_t> ToString(basic_string_span<char_t> String) {
+    std::basic_string<char_t> Result;
+    Result.resize(String.Count());
+    CopyBuffer(Result.data(), String.Begin, String.Count());
+    return Result;
+}
+template<class char_t>
+inline std::basic_string<char_t> ToString(basic_string_view<char_t> String) {
+    std::basic_string<char_t> Result;
+    Result.resize(String.Count());
+    CopyBuffer(Result.data(), String.Begin, String.Count());
     return Result;
 }
 inline void Set(std::string& A, string_view B) {
@@ -310,11 +548,11 @@ struct string_builder {
                     case 1: Append(Val1); break;
                     case 2: Append(Val2); break;
                     default: assert(0);
-                }
-            }
+        }
+    }
             else
                 Append(*C);
-    }
+}
     template<class type0, class type1, class type2, class type3>
     void AppendFormat(char* Format, const type0& Val0, const type1& Val1, const type2& Val2, const type3& Val3) {
         string_view Fmt = Format;
@@ -403,7 +641,7 @@ u64 ToU64_Unchecked(string_view String) {
 template<class callable>
 struct defer {
     callable C;
-    defer(callable&& C) : C(C) {}
+    defer(callable&& C) : C(std::forward<callable>(C)) {}
     ~defer() { C(); }
 };
 enum class data_type : u8 {
@@ -445,11 +683,11 @@ struct message {
     };
     column Column;
 };
-inline u32 Append(message& Message, message::column Column) {
+inline size_t Append(message& Message, message::column Column) {
     Message.Column = Column;
     return 0;
 }
-inline u32 Append(message& Message, string_view Val) {
+inline size_t Append(message& Message, string_view Val) {
     if (!Val.Count())
         return 0;
     assert(Message.String.Count() + Val.Count() <= message::BufferSize);
@@ -465,45 +703,45 @@ inline u32 Append(message& Message, string_view Val) {
     }
     return Val.Count();
 }
-inline u32 Append(message& Message, const char* Val) {
+inline size_t Append(message& Message, const char* Val) {
     return Append(Message, string_view(Val));
 }
-inline u32 Append(message& Message, char* Val) {
+inline size_t Append(message& Message, char* Val) {
     return Append(Message, (const char*)Val);
 }
-inline u32 Append(message& Message, const std::string& Val) {
+inline size_t Append(message& Message, const std::string& Val) {
     return Append(Message, string_view(Val));
 }
-inline u32 Append(message& Message, char Char) {
+inline size_t Append(message& Message, char Char) {
     return Append(Message, string_view(&Char, 1));
 }
-inline u32 Append(message& Message, u32 Val) {
+inline size_t Append(message& Message, u32 Val) {
     char Buf[10];
     ultoa(Val, Buf, 10);
     return Append(Message, Buf);
 }
-inline u32 Append(message& Message, u64 Val) {
+inline size_t Append(message& Message, u64 Val) {
     char Buf[20];
     _ui64toa(Val, Buf, 10);
     return Append(Message, Buf);
 }
-inline u32 Append(message& Message, s32 Val) {
+inline size_t Append(message& Message, s32 Val) {
     char Buf[11];
     itoa(Val, Buf, 10);
     return Append(Message, Buf);
 }
-inline u32 Append(message& Message, s64 Val) {
+inline size_t Append(message& Message, s64 Val) {
     char Buf[21];
     _i64toa(Val, Buf, 10);
     return Append(Message, Buf);
 }
-inline u32 Append(message& Message, location Location) {
+inline size_t Append(message& Message, location Location) {
     char LineStr[16], ColumnStr[16];
     _itoa(Location.Line, LineStr, 10);
     _itoa(Location.Column, ColumnStr, 10);
     auto Column = Message.Column;
     Message.Column = {};
-    u32 Result = 0;
+    size_t Result = 0;
     Result += Append(Message, Location.FileView);
     Result += Append(Message, ':');
     Result += Append(Message, LineStr);
@@ -517,85 +755,14 @@ inline u32 Append(message& Message, location Location) {
 }
 
 template<class type, class ...types>
-inline u32 Append(message& Message, const type& Type, const types&... Types) {
+inline size_t Append(message& Message, const type& Type, const types&... Types) {
     return Append(Message, Type) + Append(Message, Types...);
 }
-struct lexer;
-struct parser;
-struct compiler {
-    lexer* Lexer = 0;
-    parser* Parser = 0;
-    string_view SourceFileName;
-    string_view Source;
-    char CurrentDir[512];
-    char CompilerDir[512];
-    char TempDir[512];
-    char BinDir[512];
-    int ExitCode;
-    void Compile(string_view CompilerPath);
-    void Free();
-    void (*ReportMessageFn)(compiler*, const message&) = 0;
-    void ReportMessage(const message& Msg) {
-        ReportMessageFn(this, Msg);
-    }
-    // NOTE: Add messages only using 'ReportMessage'!
-    std::vector<message> Messages;
-
-    std::vector<void*> FilesContents;
-    string_view LoadFileContents(FILE* File) {
-        fseek(File, 0, SEEK_END);
-        auto FileSize = ftell(File);
-        fseek(File, 0, SEEK_SET);
-
-        auto FileContents = new char[FileSize];
-        FilesContents.push_back(FileContents);
-        fread(FileContents, FileSize, 1, File);
-        return {FileContents, (size_t)FileSize};
-    }
-
-    std::vector<std::string> CompilingFilePaths;
-};
-compiler* GlobalCompiler = 0;
-inline void ReportMessage() {
-    GlobalCompiler->ReportMessage({});
-}
-template<class ...types>
-inline void ReportMessage(types... Types) {
-    message Message;
-    Append(Message, Types...);
-    GlobalCompiler->ReportMessage(Message);
-}
-#if 1
-template<class ...types>
-inline void ReportError_(string_view File, u32 Line, location Location, types... Types) {
-    message Message;
-    Append(Message, File);
-    Append(Message, ':');
-    Append(Message, Line);
-    Append(Message, ":\n");
-    Append(Message, Location);
-    Append(Message, ": Error: ");
-    Append(Message, Types...);
-    Message.Location = Location;
-    GlobalCompiler->ReportMessage(Message);
-}
-#define ReportError(Loc, ...) ReportError_(__FILE__, __LINE__, Loc, __VA_ARGS__)
-#else
-template<class ...types>
-inline void ReportError(location Location, types... Types) {
-    message Message;
-    Append(Message.String, CompiledFile);
-    Append(Message.String, Location);
-    Append(Message.String, ": ");
-    Append(Message.String, Types...);
-    Message.Location = Location;
-    Messages.emplace_back(std::move(Message));
-}
-#endif
-bool IsPowerOf2(u32 Value) {
+template<class uint, class = std::enable_if_t<std::is_unsigned_v<uint>>>
+bool IsPowerOf2(uint Value) {
     bool Found = false;
-    for (u32 i = 0; i < 32; ++i) {
-        if (Value & (1 << i)) {
+    for (uint i = 0; i < sizeof(uint) * 8; ++i) {
+        if (Value & ((uint)1 << i)) {
             if (Found)
                 return false;
             Found = true;
@@ -603,10 +770,10 @@ bool IsPowerOf2(u32 Value) {
     }
     return true;
 }
-bool IsRelativePath(string_view Path) {
+bool IsRelativePath(directory_view Path) {
     if (Path.Count()) {
         if (Path.Count() >= 2) {
-            return Path[1] != ':';
+            return Path[1] != L':';
         }
         else {
             return true;
@@ -615,6 +782,23 @@ bool IsRelativePath(string_view Path) {
     else {
         return true;
     }
+}
+directory_span Directory_RemoveDotDot(directory_span Dir) {
+    for (auto C = Dir.Begin; C < Dir.End; ++C) {
+        if (StringsAreEqualSafe(C, DIR_LITERAL("..\\"), 3)) {
+            assert(C[-1] == '\\');
+            auto D = C - 2;
+            for (; D >= Dir.Begin; --D) {
+                if (*D == '\\')
+                    break;
+            }
+            ++D;
+            StrCpy(D, C + 3);
+            Dir.End = Dir.Begin + StrLen(Dir.Begin);
+            C = D;
+        }
+    }
+    return Dir;
 }
 #if 0
 struct s80 {
@@ -675,7 +859,7 @@ s80 operator*(s80 a, s80 b) {
     a.High *= Mult;
     a.High += Low / 0x100;
     return a;
-}
+        }
 s80 operator/(s80 a, s80 b) {
     // HACK:
     s64 A = a.High * 0x100 + a.Low;

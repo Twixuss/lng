@@ -1,4 +1,6 @@
-#include "..\lng\translate.h"
+#include <filesystem>
+#include "..\translate.h"
+#include "..\compiler.h"
 #include "..\lng\parser.h"
 int Append(string_builder* Builder, node* Node);
 
@@ -14,6 +16,7 @@ void AppendIndent(string_builder* Builder) {
         Builder->Append("    ");
     }
 }
+string_view DigitTable = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÀÁÂÃÄÅ¨ÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäå¸æçèéêëìíîïðñòóôõö÷øùúûüýþÿ";
 void AppendIdentifier(string_builder* Builder, node* Node) {
     Builder->Append(GetIdentifier(Node));
     node* Addr = [&]() -> node* {
@@ -34,23 +37,24 @@ void AppendIdentifier(string_builder* Builder, node* Node) {
                     return 0;
                 return Call->Declaration;
             }
-            case NodeType_FunctionDecl:
-            //case NodeType_TypeDecl:
-                //case NodeType_VarDecl:
-                return Node;
+            case NodeType_FunctionDecl: {
+                auto Decl = (node_functiondecl*)Node;
+                if (Decl->IsInternal)
+                    return 0;
+                return Decl;
+            }
             default: return 0;
         }
     }();
     if (Addr) {
         Builder->Append('_');
-        string_view DigitTable = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÀÁÂÃÄÅ¨ÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäå¸æçèéêëìíîïðñòóôõö÷øùúûüýþÿ";
         Builder->Append(Addr, DigitTable.Count(), false, DigitTable);
     }
 }
 void AppendParent(string_builder* Builder, node* Node, node* Declaration) {
     if (Node->Parent->AstType == NodeType_MemberAccess || (Declaration->Parent->AstType != NodeType_NSDecl && Declaration->Parent->AstType != NodeType_Global))
         return;
-    std::vector<node*> Branch;
+    list<node*> Branch;
     auto It = Declaration->Parent;
     while (It) {
         Branch.push_back(It);
@@ -81,7 +85,7 @@ void AppendParent(string_builder* Builder, node* Node, node* Declaration) {
 }
 #define TYPEDECL_DEFINED_BIT (1 << 0)
 void AppendType(string_builder* Builder, node_type* Type) {
-    std::vector<node_type*> Types;
+    list<node_type*> Types;
 
     while (1) {
         Types.push_back(Type);
@@ -141,6 +145,14 @@ int AppendTypeDefinition(parser& Parser, string_builder& Definitions, node_typed
         switch (Member->AstType) {
             case NodeType_MemberVarDecl: {
                 auto MemberVar = (node_membervardecl*)Member;
+                auto AppendMember = [&]() {
+                    Builder.Append("    ");
+                    AppendType(&Builder, MemberVar->Declaration->Type);
+                    Builder.Append(" ");
+                    Builder.Append(MemberVar->Declaration->Identifier);
+                    assert(!MemberVar->Declaration->InitialExpression);
+                    Builder.Append(" = {};\n");
+                };
                 if (UseUnions) {
                     auto MemberTypeDecl = Parser.GetTypeDecl(MemberVar->Declaration->Type);
                     if (!(MemberTypeDecl->CustomData & TYPEDECL_DEFINED_BIT)) {
@@ -152,32 +164,22 @@ int AppendTypeDefinition(parser& Parser, string_builder& Definitions, node_typed
                         Builder.Append(PaddingIndex++);
                         Builder.Append("[");
                         Builder.Append(MemberVar->Offset.Value);
-                        Builder.Append("];\n        ");
-                        AppendType(&Builder, MemberVar->Declaration->Type);
-                        Builder.Append(" ");
-                        Builder.Append(MemberVar->Declaration->Identifier);
-                        Builder.Append(";\n    };\n");
+                        Builder.Append("];\n    ");
+                        AppendMember();
+                        Builder.Append("    };\n");
                     }
                     else {
-                        Builder.Append("    ");
-                        AppendType(&Builder, MemberVar->Declaration->Type);
-                        Builder.Append(" ");
-                        Builder.Append(MemberVar->Declaration->Identifier);
-                        Builder.Append(";\n");
+                        AppendMember();
                     }
                 }
                 else {
-                    Builder.Append("    ");
-                    AppendType(&Builder, MemberVar->Declaration->Type);
-                    Builder.Append(" ");
-                    Builder.Append(MemberVar->Declaration->Identifier);
-                    Builder.Append(";\n");
+                    AppendMember();
                 }
                 break;
             }
             case NodeType_MemberFuncDecl: {
                 auto MemberFn = (node_memberfuncdecl*)Member;
-                assert(!MemberFn->Declaration->IsInternal);
+                //assert(!MemberFn->Declaration->IsInternal);
                 Builder.Append("    ");
                 AppendType(&Builder, MemberFn->Declaration->ReturnType);
                 Builder.Append(" ");
@@ -190,7 +192,8 @@ int AppendTypeDefinition(parser& Parser, string_builder& Definitions, node_typed
                 }
                 Builder.Append(");\n");
 
-                Append(0, MemberFn->Declaration);
+                if (Append(0, MemberFn->Declaration) != TRANSLATE_OK)
+                    return TRANSLATE_ERROR;
                 break;
             }
             default:
@@ -202,7 +205,6 @@ int AppendTypeDefinition(parser& Parser, string_builder& Definitions, node_typed
     Definitions.Append(Builder.GetString());
     return TRANSLATE_OK;
 };
-compiler* Compiler = 0;
 string_builder FuncHeaderBuilder, FuncBuilder, VarsBuilder;
 std::unordered_map<string_view, string_view> InternalFunctions;
 int Append(string_builder* Builder, node_assignment* Assignment) {
@@ -229,10 +231,17 @@ int Append(string_builder* Builder, node_vardecl* VarDecl) {
 }
 int Append(string_builder* Builder, node_functiondecl* FunctionDecl) {
     if (FunctionDecl->IsInternal) {
-        std::vector<string_view> Identifiers;
+        list<string_view> Identifiers;
         for (node* N = FunctionDecl->Parent; N && N->AstType != NodeType_Global; N = N->Parent) {
             switch (N->AstType) {
-                case NodeType_NSDecl: Identifiers.push_back(((node_nsdecl*)N)->Identifier); continue;
+                case NodeType_NSDecl: 
+                    Identifiers.push_back(((node_nsdecl*)N)->Identifier); 
+                    continue;
+                case NodeType_TypeDecl:
+                    Identifiers.push_back(((node_typedecl*)N)->Identifier);
+                    continue;
+                case NodeType_MemberFuncDecl:
+                    continue;
             }
             ReportError(FunctionDecl->Location, "Internal function can't be defined here");
             return TRANSLATE_ERROR;
@@ -378,12 +387,19 @@ int Append(string_builder* Builder, node_memberaccess* MemberAccess) {
         Builder->Append("_str.");
     }
     else {
-        switch (Compiler->Parser->GetDeclaration(MemberAccess->First)->AstType) {
+        switch (COMPILER.Parser->GetDeclaration(MemberAccess->First)->AstType) {
             case NodeType_NSDecl:
                 Builder->Append("::");
                 break;
             case NodeType_VarDecl:
-                Builder->Append('.');
+                switch (MemberAccess->First->Type->Type) {
+                    case type::Identifier:
+                        Builder->Append('.');
+                        break;
+                    case type::Pointer:
+                        Builder->Append("->");
+                        break;
+                }
                 break;
             default:
                 assert(0);
@@ -394,7 +410,7 @@ int Append(string_builder* Builder, node_memberaccess* MemberAccess) {
     return TRANSLATE_OK;
 }
 int Append(string_builder* Builder, node_sizeof* Sizeof) {
-    Builder->Append(Compiler->Parser->GetSizeOf(Sizeof->TestType));
+    Builder->Append(COMPILER.Parser->GetSizeOf(Sizeof->TestType));
     return TRANSLATE_OK;
 }
 int Append(string_builder* Builder, node_paren* Paren) {
@@ -427,7 +443,7 @@ int Append(string_builder* Builder, node_binaryop* BinaryOp) {
     Builder->Append('(');
     if (Append(Builder, BinaryOp->FirstExpression) != TRANSLATE_OK)
         return TRANSLATE_ERROR;
-    Builder->Append(Compiler->Parser->BinopString(BinaryOp->Op));
+    Builder->Append(COMPILER.Parser->BinopString(BinaryOp->Op));
     if (Append(Builder, BinaryOp->SecondExpression) != TRANSLATE_OK)
         return TRANSLATE_ERROR;
     Builder->Append(')');
@@ -577,6 +593,23 @@ int Append(string_builder* Builder, node_continue* Continue) {
     FuncBuilder.Append("continue");
     return TRANSLATE_OK;
 }
+int Append(string_builder* Builder, node_defer* Defer) {
+    FuncBuilder.Append("defer defer_");
+    FuncBuilder.Append(Defer, DigitTable.Count(), 0, DigitTable);
+    FuncBuilder.Append("([&](){\n");
+    ++IndentLevel;
+    for (auto S : Defer->Statements) {
+        AppendIndent(&FuncBuilder);
+        if (Append(&FuncBuilder, S) != TRANSLATE_OK)
+            return TRANSLATE_ERROR;
+        if (S->AstType != NodeType_If && S->AstType != NodeType_While && S->AstType != NodeType_Else)
+            FuncBuilder.Append(";\n");
+    }
+    --IndentLevel;
+    AppendIndent(&FuncBuilder);
+    FuncBuilder.Append("})");
+    return TRANSLATE_OK;
+}
 int Append(string_builder* Builder, node* Node) {
     switch (Node->AstType) {
         case NodeType_Literal:      return Append(Builder, (node_literal*)Node);
@@ -611,15 +644,14 @@ int Append(string_builder* Builder, node* Node) {
         case NodeType_As:           return Append(Builder, (node_as*)Node);
         case NodeType_Break:        return Append(Builder, (node_break*)Node);
         case NodeType_Continue:     return Append(Builder, (node_continue*)Node);
+        case NodeType_Defer:        return Append(Builder, (node_defer*)Node);
         case NodeType_BraceInit: Builder->Append("{}"); return TRANSLATE_OK;
         default:
             assert(false);
     }
     return TRANSLATE_OK;
 }
-extern "C" int Translate(compiler & Compiler) {
-    GlobalCompiler = ::Compiler = &Compiler;
-
+extern "C" int Translate() {
     InternalFunctions["console.write(string)"] = R"(
 uint32 write(string str) {
     DWORD charsWritten;
@@ -636,7 +668,9 @@ uint64 read(char* buf, uint64 max) {
 )";
     InternalFunctions["os.allocate(uint64)"] = R"(
 void* allocate(uint64 size) {
-    return ::malloc(size);
+    void* result = ::malloc(size);
+    memset(result, 0, size);
+    return result;
 }
 )";
     InternalFunctions["os.free(void*)"] = R"(
@@ -644,20 +678,52 @@ void free(void* ptr) {
     return ::free(ptr);
 }
 )";
+    InternalFunctions["os.openFile(string,string)"] = R"(
+File openFile(string path, string mode) {
+    return {::fopen(path._toStd().data(), mode._toStd().data())};
+}
+)";
+    InternalFunctions["os.closeFile(File)"] = R"(
+void closeFile(File file) {
+    ::fclose((FILE*)file.handle);
+}
+)";
+    InternalFunctions["File.write(void*,uint64)"] = R"(
+uint64 File::write(void* data,uint64 size) {
+    return ::fwrite(data, size, 1, (FILE*)handle);
+}
+)";
+    InternalFunctions["File.read(void*,uint64)"] = R"(
+uint64 File::read(void* data,uint64 size) {
+    return ::fread(data, size, 1, (FILE*)handle);
+}
+)";
+    InternalFunctions["File.seek(int32,int32)"] = R"(
+int32 File::seek(int32 offset,int32 origin) {
+    return ::fseek((FILE*)handle, offset, origin);
+}
+)";
+    InternalFunctions["File.tell()"] = R"(
+int32 File::tell() {
+    return ::ftell((FILE*)handle);
+}
+)";
 
     char CppFileName[256];
     char BatFileName[256];
-    sprintf(CppFileName, "%s%s.temp.cpp", Compiler.TempDir, ToString(Compiler.Parser->OutFile).data());
-    sprintf(BatFileName, "%slng_cl_build.bat", Compiler.TempDir);
+    sprintf(CppFileName, "%s%s.temp.cpp", COMPILER.TempDir, ToString(COMPILER.Parser->OutFile).data());
+    sprintf(BatFileName, "%slng_cl_build.bat", COMPILER.TempDir);
     FILE* CppFile = fopen(CppFileName, "wb");
     if (CppFile) {
-        auto& Parser = *Compiler.Parser;
+        auto& Parser = *COMPILER.Parser;
         fputs(CppFile, R"(
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <windows.h>
+#include <utility>
+#include <string>
 using int8    = int8_t;
 using int16   = int16_t;
 using int32   = int32_t;
@@ -668,6 +734,12 @@ using uint32  = uint32_t;
 using uint64  = uint64_t;
 using float32 = float;
 using float64 = double;
+template<class fn>
+struct defer {
+    fn Fn;
+    defer(fn&& Fn) : Fn(std::forward<fn>(Fn)) {}
+    ~defer() { Fn(); }
+};
 template<class type, size_t size>
 struct array {
     type values[size];
@@ -682,6 +754,10 @@ struct string {
     string() : begin(0), end(0) {}
     uint32 count() { return end - begin; }
     char at(uint32 i) { return begin[i]; }
+
+    std::string _toStd() const {
+        return std::string(begin, end);
+    }
 };
 string operator ""_str(const char* Str, size_t Count) {
     return string((char*)Str, Count);
@@ -741,28 +817,88 @@ namespace console {
         fwrite(CppFileStr.data(), CppFileStr.size(), 1, CppFile);
         fclose(CppFile);
 
-        char MSVCDir[512];
-        DWORD MSVCDirSize = GetEnvironmentVariableA("VCToolsInstallDir", MSVCDir, sizeof(MSVCDir));
-        if (MSVCDirSize == 0) {
-            puts("Can't find 'VCToolsInstallDir' environment variable. Make sure you are compiling from Developer Command Prompt for VS");
-            return TRANSLATE_ERROR;
+        auto FindEntry = [](char* Where, auto&& Predicate) {
+            for (auto& Entry : std::filesystem::directory_iterator(Where)) {
+                if (Predicate(Entry)) {
+                    strcat(Where, Entry.path().filename().string().data());
+                    return true;
+                }
+            }
+            return false;
+        };
+
+#define NEXT_DIR(buf, x)                                                        \
+        if (!FindEntry(buf, [](const std::filesystem::directory_entry& Entry) { \
+            return Entry.is_directory() && Entry.path().filename() == x;        \
+        })) {                                                                   \
+            printf("Can't find `" x "` directory in %s\n", buf);                \
+            return TRANSLATE_ERROR;                                             \
+        }                                                                       \
+        else {                                                                  \
+            strcat(buf, "\\");                                                  \
         }
+
+#define NEXT_FILE(buf, x)                                                       \
+        if (!FindEntry(buf, [](const std::filesystem::directory_entry& Entry) { \
+            return Entry.is_regular_file() && Entry.path().filename() == x;     \
+        })) {                                                                   \
+            printf("Can't find `" x "` file in %s\n", buf);                     \
+            return TRANSLATE_ERROR;                                             \
+        }
+
+#define NEXT_DIR_FIRST(buf)                                                     \
+        if (!FindEntry(buf, [](const std::filesystem::directory_entry& Entry) { \
+            return Entry.is_directory();                                        \
+        })) {                                                                   \
+            printf("No valid directories found in %s\n", buf);                  \
+            return TRANSLATE_ERROR;                                             \
+        }                                                                       \
+        else {                                                                  \
+            strcat(buf, "\\");                                                  \
+        }
+
+        char VCDir[256] = "C:\\Program Files (x86)\\Microsoft Visual Studio\\";
+        NEXT_DIR(VCDir, "2019");
+        NEXT_DIR(VCDir, "Community");
+        NEXT_DIR(VCDir, "VC");
+
+        char CLDir[256];
+        strcpy(CLDir, VCDir);
+        NEXT_DIR(CLDir, "Tools");
+        NEXT_DIR(CLDir, "MSVC");
+        NEXT_DIR_FIRST(CLDir);
+        NEXT_DIR(CLDir, "bin");
         // TODO Support x86
-        char MSVCPath[512];
-        sprintf(MSVCPath, "%sbin\\Hostx64\\x64\\cl.exe", MSVCDir);
+        NEXT_DIR(CLDir, "Hostx64");
+        NEXT_DIR(CLDir, "x64");
+
+        char CLPath[256];
+        sprintf(CLPath, "%scl.exe", CLDir);
 
         char MSVCArgs[256];
-        sprintf(MSVCArgs, "%s -nologo -Zi -link -out:%s", CppFileName, ToString(Parser.OutFile).data());
+        sprintf(MSVCArgs, "%s -nologo -Zi -std:c++17 -link -out:%s", CppFileName, ToString(Parser.OutFile).data());
 
         string_builder BatBuilder;
-        BatBuilder.Append("@echo off\nif not exist ");
-        BatBuilder.Append(Compiler.BinDir);
+        BatBuilder.Append("@echo off\n");
+        char TempBuf[8];
+        if (GetEnvironmentVariableA("VCToolsInstallDir", TempBuf, COUNT_OF(TempBuf)) == 0) {
+            char VCVarsPath[256];
+            strcpy(VCVarsPath, VCDir);
+            NEXT_DIR(VCVarsPath, "Auxiliary");
+            NEXT_DIR(VCVarsPath, "Build");
+            NEXT_FILE(VCVarsPath, "vcvarsall.bat");
+            BatBuilder.Append("call \"");
+            BatBuilder.Append(VCVarsPath);
+            BatBuilder.Append("\" x64\n");
+        }
+        BatBuilder.Append("if not exist ");
+        BatBuilder.Append(COMPILER.BinDir);
         BatBuilder.Append(" mkdir ");
-        BatBuilder.Append(Compiler.BinDir);
+        BatBuilder.Append(COMPILER.BinDir);
         BatBuilder.Append("\npushd ");
-        BatBuilder.Append(Compiler.BinDir);
+        BatBuilder.Append(COMPILER.BinDir);
         BatBuilder.Append("\n\"");
-        BatBuilder.Append(MSVCPath);
+        BatBuilder.Append(CLPath);
         BatBuilder.Append("\" ");
         BatBuilder.Append(MSVCArgs);
         BatBuilder.Append("\npopd\nexit /b %errorlevel%");

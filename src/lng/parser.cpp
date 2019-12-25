@@ -1,7 +1,8 @@
+#include "..\compiler.h"
 #include "parser.h"
 #include <algorithm>
 
-#define NEXT_TOKEN_RETURN return NextToken() ? PARSE_OK : PARSE_FINISH
+#define NEXT_TOKEN_OK_FINISH return NextToken() ? PARSE_OK : PARSE_OK_FINISH
 
 void parser::Free() {
     auto Blk = Memory.FirstBlock;
@@ -12,7 +13,6 @@ void parser::Free() {
     }
     if (GlobalScope)
         FreeScope(GlobalScope);
-    printf("Memory used: %u MB\n", Memory.BlocksUsed);
 }
 void parser::Run(compiler* Compiler) {
     if (Lexer->Tokens.size() == 0) {
@@ -111,7 +111,7 @@ void parser::Run(compiler* Compiler) {
         return Result;
     };
 #if 0
-    auto CreateBuiltinFunction = [&](string_view Identifier, node_type* ReturnType, std::vector<node_type*> Args) {
+    auto CreateBuiltinFunction = [&](string_view Identifier, node_type* ReturnType, list<node_type*> Args) {
         auto Result = CreateNode<node_functiondecl>();
         Result->Identifier = Identifier;
         Result->ReturnType = ReturnType;
@@ -305,8 +305,8 @@ void parser::Run(compiler* Compiler) {
     };
 
     Success = true;
-    
-    ImportDirectories.push_back(std::string(Compiler->CompilerDir) + "imports\\");
+
+    ImportDirectories.push_back(ToString(Compiler->CompilerDirectory) + DIR_LITERAL("imports\\"));
 
     if (!ParseMainLoop()) {
         Success = false;
@@ -353,9 +353,11 @@ void parser::Run(compiler* Compiler) {
     }
 }
 
+#define ENSURE_NEXT_TOKEN(prsr, ret, ...) if(!(prsr).NextToken()) { ReportError((prsr).TOKEN.Location, "Unexpected end of file"); __VA_ARGS__; return ret; }
+
 int parser::ParseIteration() {
     if (TOKEN.Value == "import") {
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, PARSE_FAIL_FINISH);
         if (!ExpectStringLiteral()) {
             return PARSE_FAIL;
         }
@@ -365,11 +367,11 @@ int parser::ParseIteration() {
             ReportError(TOKEN.Location, "Can't find import file '", TOKEN.Value, "'");
             return PARSE_FAIL;
         }
-        if (std::find(GlobalCompiler->CompilingFilePaths.begin(), GlobalCompiler->CompilingFilePaths.end(), ImportFile.FullPath) != GlobalCompiler->CompilingFilePaths.end()) {
-            NEXT_TOKEN_RETURN;
+        if (std::find(compiler::Instance->CompilingFilePaths.begin(), compiler::Instance->CompilingFilePaths.end(), ToString(ImportFile.FullPath)) != compiler::Instance->CompilingFilePaths.end()) {
+            NEXT_TOKEN_OK_FINISH;
         }
-        GlobalCompiler->CompilingFilePaths.push_back(ImportFile.FullPath);
-        auto FileContents= GlobalCompiler->LoadFileContents(ImportFile.File);
+        compiler::Instance->CompilingFilePaths.push_back(ToString(ImportFile.FullPath));
+        auto FileContents= compiler::Instance->LoadFileContents(ImportFile.File);
 
         bool Ok = true;
 
@@ -390,23 +392,23 @@ int parser::ParseIteration() {
         if (!Ok)
             return PARSE_FAIL;
 
-        NEXT_TOKEN_RETURN;
+        NEXT_TOKEN_OK_FINISH;
     }
     if (TOKEN.Value == "operator") {
         auto Location = TOKEN.Location;
-        NextToken();
-        auto OpStr = TOKEN.Value;
-        auto Op = ToInt(BinopFromString(OpStr));
+        ENSURE_NEXT_TOKEN(*this, PARSE_FAIL_FINISH);
         if (!IsBinaryOperator(TOKEN.Value)) {
             ReportError(TOKEN.Location, "'", TOKEN.Value, "' is not valid binary operator");
             return PARSE_FAIL;
         }
+        auto OpStr = TOKEN.Value;
         auto Decl = ParseFunDeclArgsAndBody(Location, OpStr);
         if (!Decl) {
             return PARSE_FAIL;
         }
+        auto Op = ToInt(BinopFromString(OpStr));
         GlobalNode->BinaryOperators[Op].push_back(Decl);
-        NEXT_TOKEN_RETURN;
+        NEXT_TOKEN_OK_FINISH;
     }
     auto Beginning = TOKEN.Location;
     auto Decl = ParseDeclaration();
@@ -417,7 +419,7 @@ int parser::ParseIteration() {
         case PARSE_OTHER:
             ReportError(Beginning, "It's not a declaration. Only declarations can appear in global scope");
             return PARSE_FAIL;
-        default: 
+        default:
             return ParseCode;
     }
 }
@@ -427,7 +429,6 @@ bool parser::ParseMainLoop() {
     };
     std::unordered_map<string_view, build_param> BuildParams;
     BuildParams["type"].Evaluate = [](parser& Parser) {
-        Parser.NextToken();
         if (!Parser.ExpectStringLiteral()) { return false; }
         if (Parser.TOKEN.Value == "app") {
             Parser.BuildType = build_type::App;
@@ -442,59 +443,55 @@ bool parser::ParseMainLoop() {
             ReportError(Parser.TOKEN.Location, "Expected 'app', 'slib' or 'dlib', got '", Parser.TOKEN.Value, "'");
             return false;
         }
-        Parser.NextToken();
+        ENSURE_NEXT_TOKEN(Parser, false);
         return true;
     };
     BuildParams["out"].Evaluate = [](parser& Parser) {
-        Parser.NextToken();
         if (!Parser.ExpectStringLiteral()) { return false; }
         Parser.OutFile = Parser.TOKEN.Value;
-        Parser.NextToken();
+        ENSURE_NEXT_TOKEN(Parser, false);
         return true;
     };
     BuildParams["translate"].Evaluate = [](parser& Parser) {
-        Parser.NextToken();
         if (!Parser.ExpectStringLiteral()) { return false; }
         Parser.TranslatorName = Parser.TOKEN.Value;
-        Parser.NextToken();
+        ENSURE_NEXT_TOKEN(Parser, false);
         return true;
     };
     BuildParams["arch"].Evaluate = [](parser& Parser) {
-        Parser.NextToken();
         if (!Parser.ExpectStringLiteral()) { return false; }
         Parser.TargetArch = CreateArch(Parser.TOKEN.Value, Parser.TOKEN.Location);
         if (Parser.TargetArch.Type == arch_type::Null)
             return false;
-        Parser.NextToken();
+        ENSURE_NEXT_TOKEN(Parser, false);
         return true;
     };
     BuildParams["bindir"].Evaluate = [](parser& Parser) {
-        Parser.NextToken();
         if (!Parser.ExpectStringLiteral()) { return false; }
         Parser.CustomBinDir = Parser.TOKEN.Value;
-        Parser.NextToken();
+        ENSURE_NEXT_TOKEN(Parser, false);
         return true;
     };
     BuildParams["tempdir"].Evaluate = [](parser& Parser) {
-        Parser.NextToken();
         if (!Parser.ExpectStringLiteral()) { return false; }
         Parser.CustomTempDir = Parser.TOKEN.Value;
-        Parser.NextToken();
+        ENSURE_NEXT_TOKEN(Parser, false);
         return true;
     };
     while (true) {
         if (TOKEN.Value == "build") {
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, false);
             if (!Expect("{")) {
                 return false;
             }
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, false);
             while (TOKEN.Value != "}") {
                 if (!ExpectIdentifier()) {
                     return false;
                 }
                 auto BuildIter = BuildParams.find(TOKEN.Value);
                 if (BuildIter != BuildParams.end()) {
+                    ENSURE_NEXT_TOKEN(*this, false);
                     if (!BuildIter->second.Evaluate(*this)) {
                         return false;
                     }
@@ -514,13 +511,16 @@ bool parser::ParseMainLoop() {
                     return false;
                 }
             }
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, false);
             continue;
         }
         switch (ParseIteration()) {
             case PARSE_OK: continue;
+            case PARSE_OK_FINISH: return true;
+            case PARSE_FAIL_FINISH:
             case PARSE_FAIL: return false;
-            case PARSE_FINISH: return true;
+            default:
+                assert(0);
         }
     }
 }
@@ -528,11 +528,20 @@ bool parser::ParseImportLoop() {
     while (true) {
         switch (ParseIteration()) {
             case PARSE_OK: continue;
+            case PARSE_OK_FINISH: return true;
+            case PARSE_FAIL_FINISH:
             case PARSE_FAIL: return false;
-            case PARSE_FINISH: return true;
+            default:
+                assert(0);
         }
     }
 }
+
+#define NEW_SCOPE                                               \
+scope* OldScope = CurrentScope;                                 \
+CurrentScope = CurrentScope->Children.emplace_back(new scope);  \
+CurrentScope->Parent = OldScope;                                \
+defer _([&]() {CurrentScope = OldScope; });
 
 node_type* parser::ParseType() {
     auto StartTokenIndex = Lexer->TokenIndex;
@@ -543,18 +552,18 @@ node_type* parser::ParseType() {
     if (TOKEN.Value == TOKEN_SUBSRCIPT_BEGIN) {
         auto Array = CreateTypeArray(TOKEN.Location);
         Result = Array;
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         if (TOKEN.Type != TokenType_Literal && TOKEN.DataType != data_type::UInt) {
             RestoreToken();
             return 0;
         }
         Array->Count = ToU32_Unchecked(TOKEN.Value);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         if (TOKEN.Value != TOKEN_SUBSRCIPT_END) {
             RestoreToken();
             return 0;
         }
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         Array->Next = ParseType();
         if (!Array->Next) {
             RestoreToken();
@@ -564,7 +573,7 @@ node_type* parser::ParseType() {
     else if (TOKEN.Value == TOKEN_POINTER) {
         auto Pointer = CreateTypePointer(TOKEN.Location);
         Result = Pointer;
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         Pointer->Next = ParseType();
         if (!Pointer->Next) {
             RestoreToken();
@@ -573,11 +582,11 @@ node_type* parser::ParseType() {
     }
     else if (TOKEN.Type == TokenType_Identifier) {
         if (TOKEN.Value == "auto") {
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             return TYPE_AUTO;
         }
         Result = CreateTypeIdentifier(TOKEN);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
     }
     else {
         RestoreToken();
@@ -621,7 +630,7 @@ node_vardecl* parser::ParseVarDecl() {
         ParseCode = PARSE_FAIL;
         return 0;
     }
-    NextToken();
+    ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
     node_type* Type = ParseType();
     if (!Type) {
         RestoreToken();
@@ -637,7 +646,7 @@ node_expression* parser::ParseExpression() {
     while (1) {
         if (IsBinaryOperator(TOKEN.Value)) {
             node_binaryop* BinaryOp = CreateBinaryOp(TOKEN.Location, BinopFromString(TOKEN.Value));
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             BinaryOp->FirstExpression = Result;
             Result->Parent = BinaryOp;
             if (GetBinopType(BinaryOp->Op) == binop_type::Logic)
@@ -660,22 +669,22 @@ node_expression* parser::ParseExpressionNoBinopNoAs() {
     node_expression* Result = 0;
     if (TOKEN.Type == TokenType_Literal) {
         Result = CreateLiteral(TOKEN);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
     }
     else {
         if (TOKEN.Value == TOKEN_BRACEINIT_BEGIN) {
             node_braceinit* Braceinit = CreateNode<node_braceinit>(TOKEN.Location);
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             if (TOKEN.Value != TOKEN_BRACEINIT_END) {
                 ReportError(Braceinit->Location, "Unclosed brace init");
                 return 0;
             }
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             Result = Braceinit;
         }
         else if (TOKEN.Value == TOKEN_PAREN_BEGIN) {
             node_paren* Paren = CreateParen(TOKEN.Location);
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             Paren->Expression = ParseExpression();
             if (!Paren->Expression)
                 return 0;
@@ -683,38 +692,38 @@ node_expression* parser::ParseExpressionNoBinopNoAs() {
                 ReportError(Paren->Location, "Unclosed paren");
                 return 0;
             }
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             Paren->Flags |= Paren->Expression->Flags & AstFlag_Known;
             Result = Paren;
         }
         else if (TOKEN.Value == TOKEN_ADDRESS) {
             node_address* Address = CreateNode<node_address>(TOKEN.Location);
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             Address->Expression = ParseExpressionNoBinop();
             Result = Address;
         }
         else if (TOKEN.Value == TOKEN_DEREF) {
             node_deref* Deref = CreateNode<node_deref>(TOKEN.Location);
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             Deref->Expression = ParseExpressionNoBinop();
             Result = Deref;
         }
         else if (TOKEN.Value == TOKEN_SUB) {
             node_negate* Negate = CreateNode<node_negate>(TOKEN.Location);
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             Negate->Expression = ParseExpressionNoBinop();
             Negate->Flags |= Negate->Expression->Flags & AstFlag_Known;
             Result = Negate;
         }
         else if (TOKEN.Value == TOKEN_NOT) {
             node_not* Not = CreateNode<node_not>(TOKEN.Location);
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             Not->Expression = ParseExpressionNoBinop();
             Not->Flags |= Not->Expression->Flags & AstFlag_Known;
             Result = Not;
         }
         else if (TOKEN.Value == "sizeof") {
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             auto Sizeof = CreateSizeof(TOKEN.Location, ParseType());
             if (!EnsureValid(Sizeof->TestType))
                 return 0;
@@ -727,7 +736,7 @@ node_expression* parser::ParseExpressionNoBinopNoAs() {
         else {
             if (TOKEN.Type == TokenType_Identifier) {
                 Result = CreateVarAccess(TOKEN.Location, TOKEN.Value);
-                NextToken();
+                ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             }
             else {
                 ReportError(TOKEN.Location, "???");
@@ -739,16 +748,16 @@ node_expression* parser::ParseExpressionNoBinopNoAs() {
         auto Index = CreateNode<node_index>(TOKEN.Location);
         Index->Identifier = TOKEN.Value;
         Index->Expression = Result;
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         Index->IndexExpression = ParseExpression();
         Expect(TOKEN_SUBSRCIPT_END);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         Result->Parent = Index;
         Result = Index;
     }
     if (TOKEN.Value == TOKEN_MEMBER) {
         auto Expr = CreateMemberAccess(TOKEN.Location);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         Result->Parent = Expr;
         Expr->First = Result;
         Expr->Second = ParseExpressionNoBinopNoAs();
@@ -762,7 +771,7 @@ node_expression* parser::ParseExpressionNoBinop() {
     node_expression* Result = ParseExpressionNoBinopNoAs();
     if (TOKEN.Value == "as") {
         auto As = CreateNode<node_as>(TOKEN.Location);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         Result->Parent = As;
         As->Expression = Result;
         As->Type = ParseType();
@@ -774,9 +783,9 @@ node_expression* parser::ParseExpressionNoBinop() {
 }
 node_functioncall* parser::ParseFunctionCall() {
     token Identifier = TOKEN;
-    NextToken();
+    ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
     if (TOKEN.Value == TOKEN_ARGLIST_BEGIN) {
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         node_functioncall* Call = CreateFuncCall(Identifier.Location, Identifier.Value);
         if (TOKEN.Value != TOKEN_ARGLIST_END) {
             while (1) {
@@ -788,7 +797,7 @@ node_functioncall* parser::ParseFunctionCall() {
                 }
                 Call->Arguments.push_back(Arg);
                 if (TOKEN.Value == ",") {
-                    NextToken();
+                    ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
                     continue;
                 }
                 else if (TOKEN.Value == TOKEN_ARGLIST_END) {
@@ -806,18 +815,48 @@ node_functioncall* parser::ParseFunctionCall() {
         if (NextToken())
             ParseCode = PARSE_OK;
         else
-            ParseCode = PARSE_FINISH;
+            ParseCode = PARSE_OK_FINISH;
         return Call;
     }
     PrevToken();
     return 0;
 }
 node_functiondecl* parser::ParseFunDeclArgsAndBody(location Location, string_view Identifier) {
+    NEW_SCOPE;
+
     node_functiondecl* Declaration = CreateFuncDecl(Location, Identifier);
+    Declaration->Scope = CurrentScope;
+
+#if 0
+    if (TOKEN.Value == TOKEN_TYPELIST_BEGIN) {
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
+        while (true) {
+            auto Identifier = TOKEN.Value;
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
+            Expect("type");
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
+            CurrentScope->Types[Identifier] = 0;
+            Declaration->TypeArguments.push_back(Identifier);
+            if (TOKEN.Value == ",") {
+                ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
+                continue;
+            }
+            else if (TOKEN.Value == TOKEN_TYPELIST_END) {
+                ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
+                break;
+            }
+            else {
+                ReportError(TOKEN.Location, "Only ',' or '" TOKEN_TYPELIST_END "' can appear after function type parameter declaration");
+                ParseCode = PARSE_FAIL;
+                return 0;
+            }
+        }
+    }
+#endif
     if (TOKEN.Value == TOKEN_ARGLIST_BEGIN) {
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         if (TOKEN.Value == TOKEN_ARGLIST_END) {
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         }
         else {
             while (true) {
@@ -838,15 +877,15 @@ node_functiondecl* parser::ParseFunDeclArgsAndBody(location Location, string_vie
                     return 0;
                 }
                 if (TOKEN.Value == ",") {
-                    NextToken();
+                    ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
                     continue;
                 }
                 else if (TOKEN.Value == TOKEN_ARGLIST_END) {
-                    NextToken();
+                    ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
                     break;
                 }
                 else {
-                    ReportError(TOKEN.Location, "Only ',' or ')' can appear after function parameter declaration");
+                    ReportError(TOKEN.Location, "Only ',' or '" TOKEN_ARGLIST_END "' can appear after function parameter declaration");
                     ParseCode = PARSE_FAIL;
                     return 0;
                 }
@@ -854,7 +893,7 @@ node_functiondecl* parser::ParseFunDeclArgsAndBody(location Location, string_vie
         }
     }
     if (TOKEN.Value == TOKEN_RETTYPE_DELIM) {
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         Declaration->ReturnType = ParseType();
         if (!EnsureValid(Declaration->ReturnType)) {
             ReportError(TOKEN.Location, "Failed to parse return type");
@@ -870,17 +909,11 @@ node_functiondecl* parser::ParseFunDeclArgsAndBody(location Location, string_vie
         Declaration->IsInternal = true;
     }
     else {
-        scope* OldScope = CurrentScope;
-        CurrentScope = CurrentScope->Children.emplace_back(new scope);
-        CurrentScope->Parent = OldScope;
-
-        Declaration->Scope = CurrentScope;
-
         if (!Expect(TOKEN_BODY_BEGIN)) {
             ParseCode = PARSE_FAIL;
             return 0;
         }
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
 
         while (TOKEN.Value != TOKEN_BODY_END) {
             auto Stm = ParseStatement(Declaration->Statements);
@@ -888,28 +921,37 @@ node_functiondecl* parser::ParseFunDeclArgsAndBody(location Location, string_vie
                 Declaration->Statements.push_back(Stm);
             }
             else {
-                ReportError(TOKEN.Location, "Unresolved statement");
+                switch (ParseCode) {
+                    case PARSE_FAIL_FINISH:
+                    case PARSE_OK_FINISH:
+                        ReportError(Declaration->Location, "Function body not closed");
+                        break;
+                    case PARSE_FAIL:
+                        ReportError(TOKEN.Location, "Unresolved statement");
+                        break;
+                    default:
+                        assert(0);
+                }
                 ParseCode = PARSE_FAIL;
                 return 0;
             }
         }
 
-        CurrentScope = OldScope;
     }
     //GetChildren(Parent)->push_back(Declaration);
     if (NextToken())
         ParseCode = PARSE_OK;
     else
-        ParseCode = PARSE_FINISH;
+        ParseCode = PARSE_OK_FINISH;
 
     return Declaration;
 }
 node* parser::ParseDeclaration() {
     token Identifier = TOKEN;
-    NextToken();
+    ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
     if (TOKEN.Type == TokenType_Identifier) {
         if (TOKEN.Value == "function") {
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             return ParseFunDeclArgsAndBody(Identifier.Location, Identifier.Value);
         }
         else if (TOKEN.Value == "type") {
@@ -919,9 +961,9 @@ node* parser::ParseDeclaration() {
                 ParseCode = PARSE_FAIL;
                 return 0;
             }
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             if (TOKEN.Value == "=") {
-                NextToken();
+                ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
                 token OldIdentifier = TOKEN;
 
                 node_typealias* Declaration = CreateTypeAlias(Identifier.Location, OldIdentifier.Value, Identifier.Value);
@@ -936,14 +978,14 @@ node* parser::ParseDeclaration() {
                 if (NextToken())
                     ParseCode = PARSE_OK;
                 else
-                    ParseCode = PARSE_FINISH;
+                    ParseCode = PARSE_OK_FINISH;
                 return Declaration;
             }
             else {
                 node_typedecl* TypeDecl = CreateTypeDecl(Identifier.Location, Identifier.Value);
                 while (TOKEN.Value != TOKEN_BODY_BEGIN) {
                     if (TOKEN.Value == "#align") {
-                        NextToken();
+                        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
                         TypeDecl->Align.Expression = ParseExpression();
                         if (!(TypeDecl->Align.Expression->Flags & AstFlag_Known)) {
                             ReportError(TypeDecl->Align.Expression->Location, "Expression must be known at parse time");
@@ -953,7 +995,7 @@ node* parser::ParseDeclaration() {
                         TypeDecl->Align.Value = EvaluateInt(TypeDecl->Align.Expression);
                     }
                     else if (TOKEN.Value == "#pack") {
-                        NextToken();
+                        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
                         TypeDecl->Packing.Expression = ParseExpression();
                         if (!(TypeDecl->Packing.Expression->Flags & AstFlag_Known)) {
                             ReportError(TypeDecl->Packing.Expression->Location, "Expression must be known at parse time");
@@ -968,7 +1010,7 @@ node* parser::ParseDeclaration() {
                         return 0;
                     }
                 }
-                NextToken();
+                ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
                 while (TOKEN.Value != TOKEN_BODY_END) {
                     auto Decl = ParseDeclaration();
                     if (Decl) {
@@ -982,7 +1024,7 @@ node* parser::ParseDeclaration() {
                                     return 0;
                                 }
                                 if (TOKEN.Value == "#offset") {
-                                    NextToken();
+                                    ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
                                     Member->Offset.Expression = ParseExpression();
                                     if (!(Member->Offset.Expression->Flags & AstFlag_Known)) {
                                         ReportError(Member->Offset.Expression->Location, "Expression must be known at parse time");
@@ -1012,7 +1054,8 @@ node* parser::ParseDeclaration() {
                             ParseCode = PARSE_FAIL;
                             return 0;
                         }
-                        case PARSE_FINISH: {
+                        case PARSE_FAIL_FINISH:
+                        case PARSE_OK_FINISH: {
                             ReportError(TOKEN.Location, "Typedecl body not closed");
                             ParseCode = PARSE_FAIL;
                             return 0;
@@ -1029,17 +1072,17 @@ node* parser::ParseDeclaration() {
                 if (NextToken())
                     ParseCode = PARSE_OK;
                 else
-                    ParseCode = PARSE_FINISH;
+                    ParseCode = PARSE_OK_FINISH;
                 return TypeDecl;
             }
         }
         else if (TOKEN.Value == "namespace") {
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             if (!Expect(TOKEN_BODY_BEGIN)) {
                 ParseCode = PARSE_FAIL;
                 return 0;
             }
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             node_nsdecl* Namespace = CreateNSDecl(Identifier.Location, Identifier.Value);
             while (TOKEN.Value != TOKEN_BODY_END) {
                 auto Decl = ParseDeclaration();
@@ -1056,7 +1099,7 @@ node* parser::ParseDeclaration() {
             if (NextToken())
                 ParseCode = PARSE_OK;
             else
-                ParseCode = PARSE_FINISH;
+                ParseCode = PARSE_OK_FINISH;
             return Namespace;
         }
         else {
@@ -1086,8 +1129,8 @@ node* parser::ParseDeclaration() {
         }
     }
 }
-node* parser::ParseStatement(const std::vector<node*>& ParentStatements) {
-    auto ParseStm = [&](std::vector<node*>& Statements) {
+node* parser::ParseStatement(const list<node*>& ParentStatements) {
+    auto ParseStm = [&](list<node*>& Statements) {
         auto Stm = ParseStatement(Statements);
         if (Stm) {
             Statements.push_back(Stm);
@@ -1101,7 +1144,7 @@ node* parser::ParseStatement(const std::vector<node*>& ParentStatements) {
     };
     if (TOKEN.Value == "return") {
         node_return* Return = CreateReturn(TOKEN.Location);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         Return->Expression = ParseExpression();
         if (!Return->Expression) {
             ReportError(TOKEN.Location, "Failed to parse expression");
@@ -1113,27 +1156,28 @@ node* parser::ParseStatement(const std::vector<node*>& ParentStatements) {
     }
     else if (TOKEN.Value == "break") {
         node_break* Break = CreateNode<node_break>(TOKEN.Location);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         ParseCode = PARSE_OK;
         return Break;
     }
     else if (TOKEN.Value == "continue") {
         node_continue* Continue = CreateNode<node_continue>(TOKEN.Location);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         ParseCode = PARSE_OK;
         return Continue;
     }
     else if (TOKEN.Value == "if") {
+        NEW_SCOPE;
         node_if* If = CreateNode<node_if>(TOKEN.Location);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         If->Condition = ParseExpression();
         if (TOKEN.Value == TOKEN_BODY_BEGIN) {
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             while (TOKEN.Value != TOKEN_BODY_END) {
                 if (!ParseStm(If->Statements))
                     return 0;
             }
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         }
         else {
             if (!ParseStm(If->Statements))
@@ -1143,20 +1187,21 @@ node* parser::ParseStatement(const std::vector<node*>& ParentStatements) {
         return If;
     }
     else if (TOKEN.Value == "else") {
+        NEW_SCOPE;
         if (ParentStatements.back()->AstType != NodeType_If) {
             ReportError(TOKEN.Location, "'else' can appear only after if statemetnt");
             ParseCode = PARSE_FAIL;
             return 0;
         }
         node_else* Else = CreateNode<node_else>(TOKEN.Location);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         if (TOKEN.Value == TOKEN_BODY_BEGIN) {
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             while (TOKEN.Value != TOKEN_BODY_END) {
                 if (!ParseStm(Else->Statements))
                     return 0;
             }
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         }
         else {
             if (!ParseStm(Else->Statements))
@@ -1165,17 +1210,37 @@ node* parser::ParseStatement(const std::vector<node*>& ParentStatements) {
         ParseCode = PARSE_OK;
         return Else;
     }
+    else if (TOKEN.Value == TOKEN_DEFER) {
+        NEW_SCOPE;
+        node_defer* Defer = CreateNode<node_defer>(TOKEN.Location);
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
+        if (TOKEN.Value == TOKEN_BODY_BEGIN) {
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
+            while (TOKEN.Value != TOKEN_BODY_END) {
+                if (!ParseStm(Defer->Statements))
+                    return 0;
+            }
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
+        }
+        else {
+            if (!ParseStm(Defer->Statements))
+                return 0;
+        }
+        ParseCode = PARSE_OK;
+        return Defer;
+    }
     else if (TOKEN.Value == "while") {
+        NEW_SCOPE;
         node_while* While = CreateNode<node_while>(TOKEN.Location);
-        NextToken();
+        ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         While->Condition = ParseExpression();
         if (TOKEN.Value == TOKEN_BODY_BEGIN) {
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
             while (TOKEN.Value != TOKEN_BODY_END) {
                 if (!ParseStm(While->Statements))
                     return 0;
             }
-            NextToken();
+            ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
         }
         else {
             if (!ParseStm(While->Statements))
@@ -1200,7 +1265,7 @@ node* parser::ParseStatement(const std::vector<node*>& ParentStatements) {
                 }
                 if (TOKEN.Value == "=") {
                     node_assignment* Assignment = CreateAssignment(TOKEN.Location);
-                    NextToken();
+                    ENSURE_NEXT_TOKEN(*this, 0, ParseCode = PARSE_FAIL_FINISH);
                     Assignment->Assigned = Expression;
                     Assignment->Expression = ParseExpression();
                     if (!Assignment->Expression) {
@@ -1273,8 +1338,8 @@ int GetPriority(node* Node) {
         case NodeType_TypeAlias: return 0;
         case NodeType_TypeDecl: return 1;
         case NodeType_NSDecl: return 2;
-        case NodeType_FunctionDecl: return 3;
-        case NodeType_VarDecl: return 4;
+        case NodeType_VarDecl: return 3;
+        case NodeType_FunctionDecl: return 4;
         default:
             assert(0);
             return 0;
@@ -1283,7 +1348,7 @@ int GetPriority(node* Node) {
 int parser::LinkNodes() {
     std::sort(GlobalNode->Declarations.begin(), GlobalNode->Declarations.end(), [](node* A, node* B) {
         return GetPriority(A) < GetPriority(B);
-    });
+              });
     for (node* Node : GlobalNode->Declarations) {
         Node->Parent = GlobalNode;
         if (LinkNode(Node) != LINK_OK)
@@ -1512,8 +1577,11 @@ int parser::LinkNode(node_identifier* Identifier) {
         PrintNotDeclaredError(Identifier->Location, Identifier->Identifier);
         return LINK_FATAL;
     }
-    if (Identifier->Declaration->AstType == NodeType_VarDecl)
+    if (Identifier->Declaration->AstType == NodeType_VarDecl) {
+        //if (LinkNode(Identifier->Declaration) != LINK_OK)
+        //    return LINK_FATAL;
         Identifier->Type = ((node_vardecl*)Identifier->Declaration)->Type;
+    }
     return LINK_OK;
 }
 int parser::LinkNode(node_functioncall* Call) {
@@ -1622,12 +1690,19 @@ int parser::LinkNode(node_binaryop* Binop) {
     node_type* SecondType = SecondExpr->Type;
     switch (GetBinopType(Binop->Op)) {
         case binop_type::Comparison:
-        case binop_type::Equality:
-            if (IsPointer(FirstType) && IsPointer(SecondType) && Equals(FirstType, SecondType)) {
+        case binop_type::Equality: {
+            auto Ptr0 = [this](node_expression* A, node_expression* B) {
+                return IsPointer(A->Type) && B->Flags & AstFlag_Known && IsInteger(B->Type) && EvaluateInt(B) == 0;
+            };
+            if ((IsPointer(FirstType) && IsPointer(SecondType) && Equals(FirstType, SecondType)) ||
+                Ptr0(FirstExpr, SecondExpr) ||
+                Ptr0(SecondExpr, FirstExpr)) 
+            {
                 Binop->Type = TypeIdentifier_bool;
                 return LINK_OK;
             }
             break;
+        }
     }
     if (Binop->Op == binop::Add) {
         if (IsPointer(FirstType) && IsInteger(SecondType)) {
@@ -1651,7 +1726,7 @@ int parser::LinkNode(node_binaryop* Binop) {
             return LINK_OK;
         }
     }
-    std::vector<node_functiondecl*> PossibleOverloads;
+    list<node_functiondecl*> PossibleOverloads;
     for (auto Decl : GlobalNode->BinaryOperators[ToInt(Binop->Op)]) {
         Decl->Parent = GlobalNode;
         if (LinkHeader(Decl) != LINK_OK)
@@ -1887,7 +1962,7 @@ int parser::LinkNode(node_as* As) {
     if (!Type->Decl)
         return LINK_FATAL;
 
-    if (IsPointer(As->Type)){
+    if (IsPointer(As->Type)) {
         if (IsPointer(As->Expression)) {
             return LINK_OK;
         }
@@ -1896,7 +1971,7 @@ int parser::LinkNode(node_as* As) {
         }
     }
 
-    std::vector<node_functiondecl*> PossibleOverloads;
+    list<node_functiondecl*> PossibleOverloads;
     for (auto Decl : GlobalNode->AsOperators) {
         Decl->Parent = GlobalNode;
         if (LinkHeader(Decl) != LINK_OK)
@@ -1980,6 +2055,15 @@ int parser::LinkNode(node_braceinit* Braceinit) {
     }
     return LINK_OK;
 }
+int parser::LinkNode(node_defer* Defer) {
+    LINK_INIT_NODE(Defer);
+    for (auto S : Defer->Statements) {
+        S->Parent = Defer;
+        if (LinkNode(S) == LINK_FATAL)
+            return LINK_FATAL;
+    }
+    return LINK_OK;
+}
 int parser::LinkNode(node* Node) {
     switch (Node->AstType) {
         case NodeType_Literal:      return LinkNode((node_literal*)Node);
@@ -2008,9 +2092,275 @@ int parser::LinkNode(node* Node) {
         case NodeType_Break:        return LinkNode((node_break*)Node);
         case NodeType_Continue:     return LinkNode((node_continue*)Node);
         case NodeType_BraceInit:    return LinkNode((node_braceinit*)Node);
+        case NodeType_Defer:        return LinkNode((node_defer*)Node);
         default:
             assert(0);
     }
+}
+
+inline int parser::GetPossibleFunctionDecls(node_functioncall* Call, list<node_functiondecl*>& Result, u32 Flags) {
+    auto Search = [&](node* Where) {
+        list<node_functiondecl*> Candidates;
+        for (node* TestNode : *GetChildren(Where)) {
+            node_functiondecl* Decl = 0;
+            if (TestNode->AstType == NodeType_FunctionDecl) {
+                Decl = (node_functiondecl*)TestNode;
+            }
+            else if (TestNode->AstType == NodeType_MemberFuncDecl) {
+                Decl = ((node_memberfuncdecl*)TestNode)->Declaration;
+            }
+            if (Decl) {
+                if (Decl->Identifier == Call->Identifier) {
+                    Candidates.push_back(Decl);
+                }
+            }
+        }
+        for (auto Decl : Candidates) {
+            // HACK: Link all headers earlier
+            Decl->Parent = Where;
+            if (LinkHeader(Decl) != LINK_OK)
+                return LINK_FATAL;
+            //////////
+        }
+
+        if (Flags & GPFD_NO_ARGS) {
+            Result.insert(Result.end(), Candidates.begin(), Candidates.end());
+            return LINK_OK;
+        }
+
+        if (Flags & GPFD_STRICT)
+            GetOverloadMatchingArguments(Result, Candidates, Call->Arguments, Equals);
+        else {
+            bool (parser:: * fun)(node_expression*, node_expression*) = &parser::ImplicitlyConvertible;
+            GetOverloadMatchingArguments(Result, Candidates, Call->Arguments, std::bind(this, fun));
+        }
+
+        return LINK_OK;
+    };
+    auto SearchScopeNode = GetSearchScopeNode();
+    if (SearchScopeNode) {
+        if (Search(SearchScopeNode) != LINK_OK)
+            return LINK_FATAL;
+    }
+    else {
+        node* SearchNode = GetNextFunctionHolder(Call);
+        while (true) {
+            if (Search(SearchNode) != LINK_OK)
+                return LINK_FATAL;
+            SearchNode = GetNextFunctionHolder(SearchNode);
+            if (!SearchNode) {
+                break;
+            }
+        }
+    }
+    return LINK_OK;
+}
+
+inline node_functiondecl* parser::GetMatchingOverload(node_functioncall* Call) {
+#if 0
+    list<node_functiondecl*> PossibleOverloads;
+    if (GetPossibleFunctionDecls(Call, PossibleOverloads, 0) != LINK_OK) {
+        LinkResult = LINK_FATAL;
+        return 0;
+    }
+    if (PossibleOverloads.size() == 0) {
+        PossibleOverloads.clear();
+        if (GetPossibleFunctionDecls(Call, PossibleOverloads, GPFD_NO_ARGS) != LINK_OK) {
+            LinkResult = LINK_FATAL;
+            return 0;
+        }
+        PrintNotDeclaredError(Call->Location, MakeHeaderString(Call));
+        if (PossibleOverloads.size() != 0) {
+            ReportMessage("    Available overloads:");
+            for (auto Decl : PossibleOverloads) {
+                ReportMessage("        ", MakeHeaderString(Decl));
+            }
+            ReportMessage();
+        }
+        LinkResult = LINK_FATAL;
+        return 0;
+    }
+    else if (PossibleOverloads.size() > 1) {
+        for (auto Decl : PossibleOverloads) {
+            bool Match = true;
+            for (int i=0; i < Call->Arguments.size(); ++i) {
+                if (Call->Arguments[i]->Flags & AstFlag_Known) {
+                    if (IsInteger(Call->Arguments[i]->Type)) {
+                        auto Eval = EvaluateInt(Call->Arguments[i]);
+                        if (Eval < 0) {
+                            for (auto Decl : PossibleOverloads) {
+                                if (IsSigned(Decl->Arguments[i]->Type) && Fits(Eval, GetTypeDecl(Decl->Arguments[i]->Type))) {
+                                    Call->Declaration = Decl;
+                                    goto End;
+                                }
+                            }
+                        }
+                        else {
+                            for (auto Decl : PossibleOverloads) {
+                                if (IsUnsigned(Decl->Arguments[i]->Type) && Fits(Eval, GetTypeDecl(Decl->Arguments[i]->Type))) {
+                                    Call->Declaration = Decl;
+                                    goto End;
+                                }
+                            }
+                            for (auto Decl : PossibleOverloads) {
+                                if (IsSigned(Decl->Arguments[i]->Type) && Fits(Eval, GetTypeDecl(Decl->Arguments[i]->Type))) {
+                                    Call->Declaration = Decl;
+                                    goto End;
+                                }
+                            }
+                        }
+                        goto End;
+                    }
+                }
+                if (!Equals(Call->Arguments[i]->Type, Decl->Arguments[i]->Type)) {
+                    Match = false;
+                    break;
+                }
+            }
+            if (Match) {
+                Call->Declaration = Decl;
+                break;
+            }
+        }
+    End:
+        if (!Call->Declaration) {
+            ReportError(Call->Location, "Function '", Call->Identifier, "' is ambiguous");
+            ReportMessage("    Matching overloads:");
+            for (auto Decl : PossibleOverloads) {
+                ReportMessage("        ", MakeHeaderString(Decl));
+            }
+            ReportMessage();
+            LinkResult = LINK_FATAL;
+            return 0;
+        }
+    }
+    else
+        Call->Declaration = PossibleOverloads[0];
+#endif
+    list<node_functiondecl*> Overloads;
+    auto SearchInNode = [&](node* Where, auto&& Predicate) {
+        for (node* TestNode : *GetChildren(Where)) {
+            node_functiondecl* Decl = 0;
+            if (TestNode->AstType == NodeType_FunctionDecl) {
+                Decl = (node_functiondecl*)TestNode;
+            }
+            else if (TestNode->AstType == NodeType_MemberFuncDecl) {
+                Decl = ((node_memberfuncdecl*)TestNode)->Declaration;
+            }
+            if (Decl) {
+                if (Predicate(Decl)) {
+                    Overloads.push_back(Decl);
+                }
+            }
+        }
+        //for (auto Decl : Candidates) {
+        //    // HACK: Link all headers earlier
+        //    Decl->Parent = Where;
+        //    if (LinkHeader(Decl) != LINK_OK)
+        //        return LINK_FATAL;
+        //    //////////
+        //}
+    };
+    auto IdentifierMatcher = [&](node_functiondecl* Decl) {
+        return Decl->Identifier == Call->Identifier;
+    };
+    auto Matcher = [&](node_functiondecl* Decl) {
+        if (Decl->Identifier != Call->Identifier)
+            return false;
+        if (Decl->Arguments.size() == Call->Arguments.size()) {
+            if (LinkHeader(Decl) != LINK_OK)
+                assert(0);
+            for (int i = 0; i < Call->Arguments.size(); ++i) {
+                if (!ImplicitlyConvertible(Call->Arguments[i], Decl->Arguments[i]->Type))
+                    return false;
+            }
+            return true;
+        }
+        else if (Decl->Arguments.size() > Call->Arguments.size()) {
+            if (HasDefaultArguments(Decl)) {
+                int i=0;
+                for (; i < Call->Arguments.size(); ++i) {
+                    if (!ImplicitlyConvertible(Call->Arguments[i], Decl->Arguments[i]->Type))
+                        return false;
+                }
+                for (; i < Decl->Arguments.size(); ++i) {
+                    if (!Decl->Arguments[i]->InitialExpression)
+                        return false;
+                }
+                return true;
+            }
+            else {
+                return false;
+            }
+        }
+        else {
+            return false;
+        }
+    };
+    auto SearchScopeNode = GetSearchScopeNode();
+    auto Search = [&](auto&& Predicate) {
+        if (SearchScopeNode) {
+            SearchInNode(SearchScopeNode, Predicate);
+        }
+        else {
+            node* SearchNode = GetNextFunctionHolder(Call);
+            while (true) {
+                SearchInNode(SearchNode, Predicate);
+                SearchNode = GetNextFunctionHolder(SearchNode);
+                if (!SearchNode) {
+                    break;
+                }
+            }
+        }
+    };
+
+    Search(Matcher);
+    if (Overloads.size() == 0) {
+        Search(IdentifierMatcher);
+        PrintNotDeclaredError(Call->Location, MakeHeaderString(Call));
+        if (Overloads.size() != 0) {
+            ReportMessage("    Available overloads:");
+            for (auto Decl : Overloads) {
+                ReportMessage("        ", MakeHeaderString(Decl));
+            }
+            ReportMessage();
+        }
+    }
+    else if (Overloads.size() > 1) {
+        ReportError(Call->Location, "Function '", Call->Identifier, "' is ambiguous");
+        ReportMessage("    Matching overloads:");
+        for (auto Decl : Overloads) {
+            ReportMessage(message::column(48), Decl->Location, ": ", MakeHeaderString(Decl));
+        }
+        ReportMessage();
+    }
+    else
+        return Overloads[0];
+    return 0;
+}
+
+inline node_typedecl* parser::FindTypeDecl(location Location, string_view TypeIdentifier) {
+    node_typedecl* Declaration = TryFindTypeDecl(TypeIdentifier);
+    if (!Declaration) {
+        ReportError(Location, "Type '", TypeIdentifier, "' is not declared");
+    }
+    return Declaration;
+}
+
+inline node_vardecl* parser::FindVarDecl(node* ExprNode, location Location, string_view Identifier) {
+    auto Result = TryFindVarDecl(ExprNode, Identifier);
+    if (!Result) {
+        ReportError(Location, "Variable '", Identifier, "' is not declared");
+    }
+    return Result;
+}
+
+inline node_nsdecl* parser::FindNamespaceDecl(node* ExprNode, location Location, string_view Identifier) {
+    auto Result = TryFindNamespaceDecl(ExprNode, Identifier);
+    if (!Result) {
+        ReportError(Location, "Namespace '", Identifier, "' is not declared");
+    }
+    return Result;
 }
 
 bool parser::EnsureValid(node_type* Type) {
@@ -2019,7 +2369,6 @@ bool parser::EnsureValid(node_type* Type) {
     }
     return Type != 0;
 }
-
 void parser::PrintNotDeclaredError(location Location, string_view Identifier) {
     auto SearchScopeNode = GetSearchScopeNode();
     if (SearchScopeNode) {
@@ -2042,16 +2391,119 @@ void parser::PrintNotDeclaredError(location Location, string_view Identifier) {
         ReportError(Location, "Identifier '", Identifier, "' is not declared");
     }
 }
-
 parser::found_import parser::FindImportFile(string_view Name) {
     found_import Result;
     for (auto& Dir : ImportDirectories) {
-        memcpy(Result.FullPath, Dir.data(), Dir.size());
-        memcpy(Result.FullPath + Dir.size(), Name.Begin, Name.Count());
+        Result.FullPath.Append(Dir.data(), Dir.size());
+        Result.FullPath.Append(Name.Begin, Name.Count());
         Result.FullPath[Dir.size() + Name.Count()] = 0;
-        Result.File = fopen(Result.FullPath, "rb");
+        Result.File = fopen(Result.FullPath.Begin, "rb");
         if (Result.File)
             return Result;
     }
     return {};
+}
+
+bool parser::ImplicitlyConvertible(node_expression* Src, node_expression* Dst) {
+    return ImplicitlyConvertible(Src->Type, Dst->Type, Src);
+}
+bool parser::ImplicitlyConvertible(node_expression* Src, node_type* DstType) {
+    return ImplicitlyConvertible(Src->Type, DstType, Src);
+}
+bool parser::ImplicitlyConvertible(node_type* SrcType, node_type* DstType, node* SrcNode) {
+    NotConvertibleReason = 0;
+    if (SrcType->Type == type::Identifier && DstType->Type == type::Identifier) {
+        auto Src = (node_type_identifier*)SrcType;
+        auto Dst = (node_type_identifier*)DstType;
+        if (Src->Decl == Dst->Decl) {
+            return true;
+        }
+        else {
+            if (SrcNode->Flags & AstFlag_Known) {
+                if (IsInteger(Dst->Decl) && IsInteger(Src->Decl)) {
+                    EvaluatedValue = EvaluateInt(SrcNode);
+                    if (Fits(EvaluatedValue, Dst->Decl))
+                        return true;
+                    else {
+                        NotConvertibleReason = NCR_DOES_NOT_FIT;
+                        return false;
+                    }
+                }
+                else {
+                    return false;
+                }
+            }
+            else {
+                if (IsInteger(Src) && IsInteger(Dst)) {
+                    if (Fits(Src->Decl, Dst->Decl))
+                        return true;
+                    else {
+                        NotConvertibleReason = NCR_DOES_NOT_FIT;
+                        return false;
+                    }
+                }
+                else {
+                    return false;
+                }
+            }
+        }
+    }
+    else {
+        if (IsPointer(DstType)) {
+            auto DstPtr = (node_type_pointer*)DstType;
+            if (IsInteger(SrcType)) {
+                return SrcNode->AstType == NodeType_Literal && ((node_literal*)SrcNode)->Value.Int == 0;
+            }
+            else if (IsPointer(SrcType)) {
+                return Equals(DstPtr->Next, TypeIdentifier_void) || Equals(SrcType, DstType);
+            }
+            else {
+                return false;
+            }
+        }
+        else {
+            return Equals(SrcType, DstType);
+        }
+    }
+}
+bool parser::EnsureImplicitlyConvertible(node_expression* Src, node_expression* Dst, location Location) {
+    return EnsureImplicitlyConvertible(Src->Type, Dst->Type, Src, Location);
+}
+bool parser::EnsureImplicitlyConvertible(node_expression* Src, node_type* DstType, location Location) {
+    return EnsureImplicitlyConvertible(Src->Type, DstType, Src, Location);
+}
+bool parser::EnsureImplicitlyConvertible(node_type* SrcType, node_type* DstType, node* SrcNode, location Location) {
+    if (ImplicitlyConvertible(SrcType, DstType, SrcNode)) {
+        return true;
+    }
+    switch (NotConvertibleReason) {
+        case NCR_DOES_NOT_FIT:
+            ReportError(Location, "Can't convert from '", SrcType, "' to '", DstType, "'. Evaluated value '", EvaluatedValue, "' does not fit into destination range");
+            break;
+        default:
+            ReportError(Location, "Can't convert from '", SrcType, "' to '", DstType, "'");
+            break;
+    }
+    return false;
+}
+bool parser::IsIdentifierValid(string_view Identifier) {
+    return
+        Identifier != "sizeof" &&
+        Identifier != "type";
+}
+
+arch CreateArch(string_view Name, location Location) {
+    arch Result;
+    if (Name == "x86") {
+        Result.Type = arch_type::x86;
+        Result.PtrSize = 4;
+    }
+    else if (Name == "x64") {
+        Result.Type = arch_type::x64;
+        Result.PtrSize = 8;
+    }
+    else {
+        ReportError(Location, "Available arch are: 'x86', 'x64'; got '", Name, "'");
+    }
+    return Result;
 }

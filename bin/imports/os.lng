@@ -1,5 +1,36 @@
 import "common.lng"
+Seek namespace {
+    set int32 = 0
+    cur int32 = 1
+    end int32 = 2
+}
+IOF namespace {
+    read uint32 = 1
+    write uint32 = 2
+    append uint32 = 4
+    create uint32 = 8
+    overwrite uint32 = 16
+}
+File type {
+    handle ^void
+    write function(data ^void, size uint): uint #internal
+    read  function(data ^void, size uint): uint #internal
+    seek function(offset int32, origin int32): int32 #internal
+    tell function(): int32 #internal
+    
+    write function(str string): uint {
+        return write(str.begin, str.count())
+    }
+    //seek function(offset int32): int32 {
+    //    return seek(offset, Seek.set)
+    //}
+    good function: bool {
+        return handle != 0
+    }
+}
 os namespace {
-    allocate function(size uint): ^void #internal
-    free function(ptr ^void) #internal
+    allocate  function(size uint): ^void #internal
+    free      function(ptr ^void) #internal
+    openFile  function(path string, openMode string): File #internal
+    closeFile function(file File) #internal
 }

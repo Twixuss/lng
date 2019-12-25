@@ -3,12 +3,12 @@
 #include <functional>
 #include <stack>
 
-#include "common.h"
-
-#include "translate.h"
+#include "..\common.h"
+#include "..\translate.h"
 
 #include "parser.cpp"
 #include "lexer.cpp"
+#include "compiler.cpp"
 
 #define PRINT_AST 1
 #define WRITE_AST 0
@@ -311,165 +311,6 @@ inline std::string Convert_CRLF_LF(string_view String) {
     }
     return Builder.GetString();
 }
-#define COMPILE_SUCCESS 0
-#define COMPILE_ERROR 1
-void compiler::Free() {
-    if (Parser) {
-        Parser->Free();
-        delete Parser;
-    }
-    if (Lexer) {
-        //Lexer->Free();
-        delete Lexer;
-    }
-    for (auto Ptr : FilesContents)
-        delete Ptr;
-}
-void compiler::Compile(string_view CompilerPath) {
-    DWORD CurrentDirSize = GetCurrentDirectoryA(MAX_PATH, CurrentDir);
-    if (CurrentDir[CurrentDirSize - 1] != '\\') {
-        CurrentDir[CurrentDirSize++] = '\\';
-        CurrentDir[CurrentDirSize] = 0;
-    }
-
-    size_t CompilerPathSize = 0;
-    if (IsRelativePath(CompilerPath)) {
-        memcpy(CompilerDir, CurrentDir, CurrentDirSize);
-        memcpy(CompilerDir + CurrentDirSize, CompilerPath.Begin, CompilerPath.Count());
-        CompilerPathSize = CurrentDirSize + CompilerPath.Count();
-    }
-    else {
-        memcpy(CompilerDir, CompilerPath.Begin, CompilerPath.Count());
-        CompilerPathSize = CompilerPath.Count();
-    }
-    for (char* C = CompilerDir + CompilerPathSize - 1; C > CompilerDir; --C) {
-        if (*C == '\\') {
-            C[1] = 0;
-            break;
-        }
-    }
-
-    char FileDir[256];
-    size_t FileDirSize = 0;
-    if (IsRelativePath(SourceFileName)) {
-        memcpy(FileDir, CurrentDir, CurrentDirSize);
-        memcpy(FileDir + CurrentDirSize, SourceFileName.Begin, SourceFileName.Count());
-        FileDirSize = CurrentDirSize + SourceFileName.Count();
-    }
-    else {
-        memcpy(FileDir, SourceFileName.Begin, SourceFileName.Count());
-        FileDirSize = SourceFileName.Count();
-    }
-    for (char* C = FileDir + FileDirSize - 1; C > FileDir; --C) {
-        if (*C == '\\') {
-            C[1] = 0;
-            break;
-        }
-    }
-
-    printf("CompilerDir: %s\n", CompilerDir);
-    printf("FileDir: %s\n", FileDir);
-
-    char CompiledFilePathBuffer[256];
-    memcpy(CompiledFilePathBuffer, CurrentDir, CurrentDirSize);
-    memcpy(CompiledFilePathBuffer + CurrentDirSize, SourceFileName.Begin, SourceFileName.Count());
-    CompilingFilePaths.push_back({CompiledFilePathBuffer, CurrentDirSize + SourceFileName.Count()});
-
-    ExitCode = COMPILE_SUCCESS;
-    Lexer = new lexer;
-    Lexer->Process(Source);
-
-    if (Lexer->Success) {
-        char LogFileName[MAX_PATH];
-        memcpy(LogFileName, SourceFileName.Begin, SourceFileName.Count());
-        strcpy(LogFileName + SourceFileName.Count(), ".tokens");
-        FILE* TokensFile = fopen(LogFileName, "wb");
-        if (TokensFile) {
-            char* Format = "%-40s%-15s%-10s\n";
-            fprintf(TokensFile, Format, "Value", "AstType", "Data");
-            for (token Token : Lexer->Tokens) {
-                fprintf(TokensFile, Format, ToString(Token.Value).data(), ToString(Token.Type), ToString(Token.DataType));
-            }
-        }
-        else {
-            puts("Can't open tokens log file!");
-        }
-
-        Parser = new parser(Lexer);
-        Parser->Run(this);
-        if (Parser->Success) {
-            if (Parser->TempDir.starts_with("<filedir>")) {
-                Parser->TempDir.replace(0, 9, FileDir);
-            }
-            if (IsRelativePath(Parser->TempDir)) {
-                sprintf(TempDir, "%s%s", CurrentDir, Parser->TempDir.data());
-            }
-            else {
-                strcpy(TempDir, Parser->TempDir.data());
-            }
-            if (Parser->BinDir.starts_with("<filedir>")) {
-                Parser->BinDir.replace(0, 9, FileDir);
-            }
-            if (IsRelativePath(Parser->BinDir)) {
-                sprintf(BinDir, "%s%s", CurrentDir, Parser->BinDir.data());
-            }
-            else {
-                strcpy(BinDir, Parser->BinDir.data());
-            }
-            if (!CreateDirectoryA(TempDir, 0)) { assert(GetLastError() == ERROR_ALREADY_EXISTS); }
-            if (!CreateDirectoryA(BinDir, 0)) { assert(GetLastError() == ERROR_ALREADY_EXISTS); }
-            char TranslatorFile[MAX_PATH];
-            sprintf(TranslatorFile, "translate\\%s.dll", ToString(Parser->TranslatorName).data());
-            HMODULE Translator = LoadLibraryA(TranslatorFile);
-            if (Translator) {
-                using translate = int(*)(compiler*);
-                translate Translate = (translate)GetProcAddress(Translator, "Translate");
-                if (Translate) {
-                    if (Translate(this) != TRANSLATE_OK) {
-                        puts("Translation failed");
-                        ExitCode = COMPILE_ERROR;
-                    }
-                }
-                else {
-                    printf("%s does not contain Translate function\n", TranslatorFile);
-                    ExitCode = COMPILE_ERROR;
-                }
-                FreeLibrary(Translator);
-            }
-            else {
-                printf("Can't open %s\n", TranslatorFile);
-                ExitCode = COMPILE_ERROR;
-            }
-#if PRINT_AST
-            if (Parser->GlobalNode->Declarations.size() > 0) {
-                strcpy(LogFileName + SourceFileName.Count(), ".ast");
-                FILE* ASTFile = fopen(LogFileName, "wb");
-                if (ASTFile) {
-                    for (node* Node : Parser->GlobalNode->Declarations) {
-                        PrintNode(ASTFile, Node);
-                    }
-                    fclose(ASTFile);
-                }
-                else {
-                    puts("Can't open ast log file!");
-                    ExitCode = COMPILE_ERROR;
-                }
-            }
-#endif
-        }
-        else {
-            puts("Parsing failed");
-            ExitCode = COMPILE_ERROR;
-        }
-        if (TokensFile) {
-            fclose(TokensFile);
-        }
-    }
-    else {
-        puts("Lexing failed");
-        ExitCode = COMPILE_ERROR;
-    }
-}
 
 #if WRITE_AST
 
@@ -673,6 +514,38 @@ int main(int ArgumentCount, char* Arguments[]) {
             SourceFileName = Arg;
         }
     }
+    directory_buffer CurrentDirectoryBuf;
+    DWORD CurrentDirSize = GetCurrentDirectoryA(COUNT_OF(CurrentDirectoryBuf.Begin), CurrentDirectoryBuf.Begin);
+    if (CurrentDirectoryBuf[CurrentDirSize - 1] != '\\') {
+        CurrentDirectoryBuf[CurrentDirSize++] = '\\';
+        CurrentDirectoryBuf[CurrentDirSize] = 0;
+    }
+    printf("CurrentDirectory: %s\n", CurrentDirectoryBuf.Begin);
+    directory_view CurrentDirectory = {CurrentDirectoryBuf.Begin, CurrentDirSize};
+
+    string_view CompilerPath = Arguments[0];
+    size_t CompilerPathSize = 0;
+    directory_buffer CompilerDirectoryBuf;
+    if (IsRelativePath(CompilerPath)) {
+        CopyBuffer(CompilerDirectoryBuf.Begin, CurrentDirectory.Begin, CurrentDirectory.Count());
+        CopyBuffer(CompilerDirectoryBuf.Begin + CurrentDirectory.Count(), CompilerPath.Begin, CompilerPath.Count());
+        CompilerPathSize = CurrentDirectory.Count() + CompilerPath.Count();
+    }
+    else {
+        CopyBuffer(CompilerDirectoryBuf.Begin, CompilerPath.Begin, CompilerPath.Count());
+        CompilerPathSize = CompilerPath.Count();
+    }
+    directory_view CompilerDirectory;
+    CompilerDirectory.Begin = CompilerDirectoryBuf.Begin;
+    for (auto C = CompilerDirectoryBuf.Begin + CompilerPathSize - 1; C > CompilerDirectoryBuf.Begin; --C) {
+        if (*C == '\\') {
+            C[1] = 0;
+            CompilerDirectory.End = C + 1;
+            break;
+        }
+    }
+    printf("CompilerDirectory: %s\n", CompilerDirectoryBuf.Begin);
+
     auto CompileAndPrint = [&]() {
         FILE* File = fopen(SourceFileName, "rb");
         if (File) {
@@ -688,15 +561,13 @@ int main(int ArgumentCount, char* Arguments[]) {
             auto ValidFileContents = Convert_CRLF_LF(FileContents);
 
             compiler Compiler;
-            Compiler.ReportMessageFn = [](compiler* C, const message& M) {
-                C->Messages.push_back(M);
-            };
-            GlobalCompiler = &Compiler;
             Compiler.Source = ValidFileContents;
             Compiler.SourceFileName = SourceFileName;
+            Compiler.CurrentDirectory = CurrentDirectory;
+            Compiler.CompilerDirectory = CompilerDirectory;
             {
                 //LEAK_CHECKER("Compile");
-                Compiler.Compile(Arguments[0]);
+                Compiler.Compile();
             }
 
             switch (Compiler.ExitCode) {
@@ -704,7 +575,7 @@ int main(int ArgumentCount, char* Arguments[]) {
                     puts("Compilation succeeded.");
                     break;
                 case COMPILE_ERROR:
-                    PrintMessages();
+                    Compiler.PrintMessages();
                     puts("Compilation failed.");
                     break;
             }
@@ -725,6 +596,10 @@ int main(int ArgumentCount, char* Arguments[]) {
             FILETIME LastWriteTime = {};
             while (true) {
                 FILETIME WriteTime = GetLastWriteTime(SourceFileName);
+                if (!WriteTime.dwLowDateTime) {
+                    puts("Can't open source file!");
+                    return 1;
+                }
                 if (CompareFileTime(&WriteTime, &LastWriteTime) != 0) {
                     puts("");
                     LastWriteTime = WriteTime;
